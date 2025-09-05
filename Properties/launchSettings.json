@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "meli_znube_integration": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7171",
+      "launchBrowser": false
+    }
+  }
+}
