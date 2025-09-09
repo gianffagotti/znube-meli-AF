@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -137,15 +138,82 @@ namespace meli_znube_integration.Api
 
         public async Task UpsertOrderNoteAsync(string orderId, string noteText, string accessToken)
         {
+            if (string.IsNullOrWhiteSpace(orderId) || string.IsNullOrWhiteSpace(noteText))
+            {
+                return;
+            }
+
+            const string autoPrefix = "[AUTO] ";
+
+            // Evitar redundancia si ya existe alguna nota automática
+            try
+            {
+                var existingNotes = await GetOrderNotesAsync(orderId, accessToken);
+                if (existingNotes.Any(n => !string.IsNullOrWhiteSpace(n) && n!.StartsWith(autoPrefix, StringComparison.Ordinal)))
+                {
+                    return;
+                }
+            }
+            catch
+            {
+                // Si falla la lectura de notas, continuar y dejar que el POST decida
+            }
+
+            var finalNote = noteText.StartsWith(autoPrefix, StringComparison.Ordinal) ? noteText : $"{autoPrefix}{noteText}";
+
             var client = _httpClientFactory.CreateClient("meli");
             using var req = new HttpRequestMessage(HttpMethod.Post, $"orders/{orderId}/notes");
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            req.Content = new StringContent(JsonSerializer.Serialize(new { note = noteText }), System.Text.Encoding.UTF8, "application/json");
+            req.Content = new StringContent(JsonSerializer.Serialize(new { note = finalNote }), System.Text.Encoding.UTF8, "application/json");
             using var res = await client.SendAsync(req);
             if (!res.IsSuccessStatusCode)
             {
                 // Permitir que el caller decida cómo manejar el fallo sin loguear aquí
             }
+        }
+
+        public async Task<List<string>> GetOrderNotesAsync(string orderId, string accessToken)
+        {
+            var client = _httpClientFactory.CreateClient("meli");
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"orders/{orderId}/notes");
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var res = await client.SendAsync(req);
+
+            if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return new List<string>();
+            }
+            if (!res.IsSuccessStatusCode)
+            {
+                res.EnsureSuccessStatusCode();
+            }
+
+            var json = await res.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            var notes = new List<string>();
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var entry in root.EnumerateArray())
+                {
+                    if (entry.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var r in results.EnumerateArray())
+                        {
+                            if (r.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String)
+                            {
+                                var value = n.GetString();
+                                if (!string.IsNullOrWhiteSpace(value))
+                                {
+                                    notes.Add(value!);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return notes;
         }
     }
 

@@ -48,6 +48,23 @@ namespace meli_znube_integration
 
                 orderId = ExtractLastSegment(resource!);
                 var accessToken = await _auth.GetValidAccessTokenAsync();
+
+                // Verificación temprana para evitar trabajo innecesario si ya existe una nota automática
+                try
+                {
+                    const string autoPrefix = "[AUTO] ";
+                    var existingNotes = await _meli.GetOrderNotesAsync(orderId, accessToken);
+                    if (existingNotes.Any(n => !string.IsNullOrWhiteSpace(n) && n!.StartsWith(autoPrefix, StringComparison.Ordinal)))
+                    {
+                        var resEarly = req.CreateResponse(HttpStatusCode.OK);
+                        return resEarly;
+                    }
+                }
+                catch
+                {
+                    // Si falla la lectura de notas, continuar con el flujo normal
+                }
+
                 var order = await _meli.GetOrderAsync(orderId, accessToken);
                 if (order == null)
                 {
@@ -91,7 +108,7 @@ namespace meli_znube_integration
                         try { at = await _auth.GetValidAccessTokenAsync(); } catch { }
                         if (!string.IsNullOrWhiteSpace(at))
                         {
-                            await _meli.UpsertOrderNoteAsync(orderId!, generic, at!);
+                            //await _meli.UpsertOrderNoteAsync(orderId!, generic, at!);
                         }
                     }
                 }
