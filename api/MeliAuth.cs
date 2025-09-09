@@ -4,7 +4,6 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 
 namespace meli_znube_integration.Api
 {
@@ -12,15 +11,13 @@ namespace meli_znube_integration.Api
     {
         private readonly TokensStoreBlob _store;
         private readonly IHttpClientFactory _httpClientFactory;
-        private readonly ILogger<MeliAuth> _logger;
 
         private static readonly Uri Base = new("https://api.mercadolibre.com/");
 
-        public MeliAuth(TokensStoreBlob store, IHttpClientFactory httpClientFactory, ILogger<MeliAuth> logger)
+        public MeliAuth(TokensStoreBlob store, IHttpClientFactory httpClientFactory)
         {
             _store = store;
             _httpClientFactory = httpClientFactory;
-            _logger = logger;
         }
 
         public async Task ExchangeCodeForTokensAsync(string code)
@@ -59,7 +56,6 @@ namespace meli_znube_integration.Api
 
             if (string.IsNullOrWhiteSpace(refresh))
             {
-                _logger.LogWarning("No hay refresh_token disponible en el blob.");
                 throw new InvalidOperationException("No hay tokens disponibles para refrescar.");
             }
 

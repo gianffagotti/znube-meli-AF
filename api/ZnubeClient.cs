@@ -8,12 +8,10 @@ namespace meli_znube_integration.Api
     public class ZnubeClient
     {
         private readonly IHttpClientFactory _httpClientFactory;
-        private readonly ILogger<ZnubeClient> _logger;
 
-        public ZnubeClient(IHttpClientFactory httpClientFactory, ILogger<ZnubeClient> logger)
+        public ZnubeClient(IHttpClientFactory httpClientFactory)
         {
             _httpClientFactory = httpClientFactory;
-            _logger = logger;
         }
 
         public async Task<IEnumerable<string>> GetAssignmentsForOrderAsync(MeliOrder order, CancellationToken cancellationToken = default)
@@ -24,10 +22,14 @@ namespace meli_znube_integration.Api
                 string label = "Sin asignación";
                 if (!string.IsNullOrWhiteSpace(item.SellerSku))
                 {
-                    var assignment = await TryGetAssignmentBySkuAsync(item.SellerSku!, cancellationToken);
-                    if (!string.IsNullOrWhiteSpace(assignment))
+                    var lookup = await TryGetAssignmentBySkuAsync(item.SellerSku!, cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(lookup.Assignment))
                     {
-                        label = assignment!;
+                        label = lookup.Assignment!;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(lookup.ControlledErrorMessage))
+                    {
+                        label = $"ERROR: {lookup.ControlledErrorMessage}";
                     }
                 }
                 results.Add($"{item.Title} → {label}");
@@ -35,80 +37,98 @@ namespace meli_znube_integration.Api
             return results;
         }
 
-        private async Task<string?> TryGetAssignmentBySkuAsync(string sellerSku, CancellationToken cancellationToken)
+        private sealed class AssignmentLookup
         {
-            try
+            public string? Assignment { get; set; }
+            public string? ControlledErrorMessage { get; set; }
+        }
+
+        private async Task<AssignmentLookup> TryGetAssignmentBySkuAsync(string sellerSku, CancellationToken cancellationToken)
+        {
+            var client = _httpClientFactory.CreateClient("znube");
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?sku={Uri.EscapeDataString(sellerSku)}");
+            using var res = await client.SendAsync(req, cancellationToken);
+            if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
-                var client = _httpClientFactory.CreateClient("znube");
-                using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?sku={Uri.EscapeDataString(sellerSku)}");
-                using var res = await client.SendAsync(req, cancellationToken);
-                if (!res.IsSuccessStatusCode)
-                {
-                    _logger.LogWarning("ZNube no devolvió éxito para sku {Sku}. Status {Status}", sellerSku, (int)res.StatusCode);
-                    return null;
-                }
-
-                var body = await res.Content.ReadAsStringAsync(cancellationToken);
-                var dto = JsonSerializer.Deserialize<OmnichannelResponse>(body);
-                if (dto?.Data == null)
-                {
-                    return null;
-                }
-
-                var resources = BuildResourcesMap(dto.Data);
-                var skuResourceIdsWithQty = BuildResourceIdsWithQty(dto.Data);
-
-                var assignment = ResolveAssignmentFromSku(resources, skuResourceIdsWithQty);
-                if (!string.IsNullOrWhiteSpace(assignment))
-                {
-                    return assignment;
-                }
-
-                // Si hay ambigüedad, reintentar por productId
-                string? productId = TryGetProductId(dto.Data);
-                if (!string.IsNullOrWhiteSpace(productId))
-                {
-                    return await TryGetAssignmentByProductIdAsync(productId!, skuResourceIdsWithQty, cancellationToken);
-                }
-
-                return null;
+                return new AssignmentLookup { ControlledErrorMessage = $"SKU {sellerSku} no existe" };
             }
-            catch (Exception ex)
+            if (!res.IsSuccessStatusCode)
             {
-                _logger.LogError(ex, "Error consultando ZNube para sku {Sku}", sellerSku);
-                return null;
+                res.EnsureSuccessStatusCode();
             }
+
+            var body = await res.Content.ReadAsStringAsync(cancellationToken);
+            var dto = JsonSerializer.Deserialize<OmnichannelResponse>(body);
+            if (dto?.Data == null)
+            {
+                return new AssignmentLookup { ControlledErrorMessage = $"SKU {sellerSku} no existe" };
+            }
+
+            var resources = BuildResourcesMap(dto.Data);
+            var skuResourceIdsWithQty = BuildResourceIdsWithQty(dto.Data);
+
+            // Detectar si el SKU no existe en la respuesta
+            bool skuPresent = false;
+            foreach (var s in dto.Data.Stock)
+            {
+                if (!string.IsNullOrWhiteSpace(s.Sku) && string.Equals(s.Sku, sellerSku, StringComparison.OrdinalIgnoreCase))
+                {
+                    skuPresent = true;
+                    break;
+                }
+            }
+
+            var assignment = ResolveAssignmentFromSku(resources, skuResourceIdsWithQty);
+            if (!string.IsNullOrWhiteSpace(assignment))
+            {
+                return new AssignmentLookup { Assignment = assignment };
+            }
+
+            if (!skuPresent)
+            {
+                return new AssignmentLookup { ControlledErrorMessage = $"SKU {sellerSku} no existe" };
+            }
+
+            // Si hay ambigüedad, reintentar por productId
+            string? productId = TryGetProductId(dto.Data);
+            if (!string.IsNullOrWhiteSpace(productId))
+            {
+                var byProduct = await TryGetAssignmentByProductIdAsync(productId!, skuResourceIdsWithQty, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(byProduct))
+                {
+                    return new AssignmentLookup { Assignment = byProduct };
+                }
+            }
+
+            // Si no hay stock en ningún recurso para el SKU
+            if (skuResourceIdsWithQty.Count == 0)
+            {
+                return new AssignmentLookup { ControlledErrorMessage = $"Sin stock para SKU {sellerSku}" };
+            }
+
+            return new AssignmentLookup();
         }
 
         private async Task<string?> TryGetAssignmentByProductIdAsync(string productId, HashSet<string> allowedResourceIds, CancellationToken cancellationToken)
         {
-            try
+            var client = _httpClientFactory.CreateClient("znube");
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?productId={Uri.EscapeDataString(productId)}");
+            using var res = await client.SendAsync(req, cancellationToken);
+            if (!res.IsSuccessStatusCode)
             {
-                var client = _httpClientFactory.CreateClient("znube");
-                using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?productId={Uri.EscapeDataString(productId)}");
-                using var res = await client.SendAsync(req, cancellationToken);
-                if (!res.IsSuccessStatusCode)
-                {
-                    _logger.LogWarning("ZNube no devolvió éxito para productId {ProductId}. Status {Status}", productId, (int)res.StatusCode);
-                    return null;
-                }
-
-                var body = await res.Content.ReadAsStringAsync(cancellationToken);
-                var dto = JsonSerializer.Deserialize<OmnichannelResponse>(body);
-                if (dto?.Data == null)
-                {
-                    return null;
-                }
-
-                var resources = BuildResourcesMap(dto.Data);
-                var assignment = ResolveAssignmentFromProduct(resources, allowedResourceIds);
-                return assignment;
+                res.EnsureSuccessStatusCode();
             }
-            catch (Exception ex)
+
+            var body = await res.Content.ReadAsStringAsync(cancellationToken);
+            var dto = JsonSerializer.Deserialize<OmnichannelResponse>(body);
+            if (dto?.Data == null)
             {
-                _logger.LogError(ex, "Error consultando ZNube para productId {ProductId}", productId);
                 return null;
             }
+
+            var resources = BuildResourcesMap(dto.Data);
+            var assignment = ResolveAssignmentFromProduct(resources, allowedResourceIds);
+            return assignment;
         }
 
         private static Dictionary<string, (string Name, double TotalStock)> BuildResourcesMap(OmnichannelData data)

@@ -4,19 +4,16 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 
 namespace meli_znube_integration.Api
 {
     public class MeliClient
     {
         private readonly IHttpClientFactory _httpClientFactory;
-        private readonly ILogger<MeliClient> _logger;
 
-        public MeliClient(IHttpClientFactory httpClientFactory, ILogger<MeliClient> logger)
+        public MeliClient(IHttpClientFactory httpClientFactory)
         {
             _httpClientFactory = httpClientFactory;
-            _logger = logger;
         }
 
         public async Task<MeliOrder?> GetOrderAsync(string orderId, string accessToken)
@@ -28,13 +25,10 @@ namespace meli_znube_integration.Api
             using var res = await client.SendAsync(req);
             if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
-                _logger.LogInformation("Orden {OrderId} no encontrada en MELI.", orderId);
                 return null;
             }
             if (!res.IsSuccessStatusCode)
             {
-                var body = await res.Content.ReadAsStringAsync();
-                _logger.LogError("Error recuperando orden {OrderId}. Status {Status}. Body: {Body}", orderId, (int)res.StatusCode, body);
                 res.EnsureSuccessStatusCode();
             }
 
@@ -105,7 +99,6 @@ namespace meli_znube_integration.Api
             using var res = await client.SendAsync(req);
             if (!res.IsSuccessStatusCode)
             {
-                _logger.LogWarning("No se pudo obtener shipment {ShipmentId}. Status {Status}", order.ShippingId, (int)res.StatusCode);
                 return null;
             }
 
@@ -151,8 +144,7 @@ namespace meli_znube_integration.Api
             using var res = await client.SendAsync(req);
             if (!res.IsSuccessStatusCode)
             {
-                var body = await res.Content.ReadAsStringAsync();
-                _logger.LogWarning("No se pudo upsert note para orden {OrderId}. Status {Status}. Body: {Body}", orderId, (int)res.StatusCode, body);
+                // Permitir que el caller decida cómo manejar el fallo sin loguear aquí
             }
         }
     }

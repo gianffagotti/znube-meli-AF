@@ -27,40 +27,30 @@ namespace meli_znube_integration
         public async Task<HttpResponseData> Run(
             [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "webhooks/orders")] HttpRequestData req)
         {
-            _logger.LogInformation("Webhook /webhooks/orders recibido.");
             string? resource = null;
-            try
-            {
-                using var doc = await JsonDocument.ParseAsync(req.Body);
-                if (doc.RootElement.TryGetProperty("resource", out var resourceProp) && resourceProp.ValueKind == JsonValueKind.String)
-                {
-                    resource = resourceProp.GetString();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "No se pudo parsear el body del webhook.");
-            }
-
-            _logger.LogInformation("resource: {Resource}", resource);
-
-            if (string.IsNullOrWhiteSpace(resource))
-            {
-                var resEmpty = req.CreateResponse(HttpStatusCode.OK);
-                return resEmpty;
-            }
-
-            string orderId = ExtractLastSegment(resource!);
-            _logger.LogInformation("orderId: {OrderId}", orderId);
-
+            string? orderId = null;
             string? noteText = null;
             try
             {
+                using (var doc = await JsonDocument.ParseAsync(req.Body))
+                {
+                    if (doc.RootElement.TryGetProperty("resource", out var resourceProp) && resourceProp.ValueKind == JsonValueKind.String)
+                    {
+                        resource = resourceProp.GetString();
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(resource))
+                {
+                    var resEmpty = req.CreateResponse(HttpStatusCode.OK);
+                    return resEmpty;
+                }
+
+                orderId = ExtractLastSegment(resource!);
                 var accessToken = await _auth.GetValidAccessTokenAsync();
                 var order = await _meli.GetOrderAsync(orderId, accessToken);
                 if (order == null)
                 {
-                    _logger.LogInformation("Orden {OrderId} no disponible. Respondiendo 200 OK sin contenido.", orderId);
                     var resOk = req.CreateResponse(HttpStatusCode.OK);
                     return resOk;
                 }
@@ -76,21 +66,38 @@ namespace meli_znube_integration
                 lines.AddRange(assignments);
                 noteText = string.Join("\n", lines);
 
-                _logger.LogInformation("noteText compuesto: {NoteText}", noteText);
-
                 // await _meli.UpsertOrderNoteAsync(orderId, noteText, accessToken);
+
+                var res = req.CreateResponse(HttpStatusCode.OK);
+                if (!string.IsNullOrWhiteSpace(noteText))
+                {
+                    await res.WriteStringAsync(noteText, Encoding.UTF8);
+                }
+
+                _logger.LogInformation("noteText compuesto: {NoteText}", noteText);
+                _logger.LogInformation("Orden {OrderId} procesada correctamente.", orderId);
+
+                return res;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error procesando webhook de orden {OrderId}", orderId);
+                _logger.LogError(ex, "Error no controlado procesando orden {OrderId}", orderId);
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(orderId))
+                    {
+                        var generic = $"ERROR procesando webhook para orden {orderId}. Verificar y reintentar.";
+                        string? at = null;
+                        try { at = await _auth.GetValidAccessTokenAsync(); } catch { }
+                        if (!string.IsNullOrWhiteSpace(at))
+                        {
+                            await _meli.UpsertOrderNoteAsync(orderId!, generic, at!);
+                        }
+                    }
+                }
+                catch { }
+                throw;
             }
-
-            var res = req.CreateResponse(HttpStatusCode.OK);
-            if (!string.IsNullOrWhiteSpace(noteText))
-            {
-                await res.WriteStringAsync(noteText, Encoding.UTF8);
-            }
-            return res;
         }
 
         private static string ExtractLastSegment(string path)
