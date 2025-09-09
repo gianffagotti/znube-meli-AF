@@ -1,5 +1,10 @@
 {
   "dependencies": {
+    "storage1": {
+      "resourceId": "/subscriptions/[parameters('subscriptionId')]/resourceGroups/[parameters('resourceGroupName')]/providers/Microsoft.Storage/storageAccounts/znubemeli",
+      "type": "storage.azure",
+      "connectionId": "AzureWebJobsStorage"
+    },
     "appInsights1": {
       "resourceId": "/subscriptions/[parameters('subscriptionId')]/resourceGroups/[parameters('resourceGroupName')]/providers/microsoft.insights/components/znuble-meli",
       "type": "appInsights.azure",
