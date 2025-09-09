@@ -76,11 +76,11 @@ namespace meli_znube_integration
 
                 var assignments = await _znube.GetAssignmentsForOrderAsync(order);
                 var lines = new List<string>();
+                lines.AddRange(assignments);
                 if (!string.IsNullOrWhiteSpace(zone))
                 {
-                    lines.Add($"Zona: {zone}");
+                    lines.Add($"({zone})");
                 }
-                lines.AddRange(assignments);
                 noteText = string.Join("\n", lines);
 
                 // await _meli.UpsertOrderNoteAsync(orderId, noteText, accessToken);

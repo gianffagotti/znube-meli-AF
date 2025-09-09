@@ -45,7 +45,7 @@ namespace meli_znube_integration.Api
         public string ResourceId { get; set; } = string.Empty;
         public string Name { get; set; } = string.Empty;
         public string? Store { get; set; }
-        public double TotalStock { get; set; }
+        public double? TotalStock { get; set; } 
     }
 
     public class OmnichannelVariantType

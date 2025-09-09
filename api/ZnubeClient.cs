@@ -1,7 +1,7 @@
-using Microsoft.Extensions.Logging;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace meli_znube_integration.Api
 {
@@ -20,9 +20,10 @@ namespace meli_znube_integration.Api
             foreach (var item in order.Items)
             {
                 string label = "Sin asignación";
+                AssignmentLookup? lookup = null;
                 if (!string.IsNullOrWhiteSpace(item.SellerSku))
                 {
-                    var lookup = await TryGetAssignmentBySkuAsync(item.SellerSku!, cancellationToken);
+                    lookup = await TryGetAssignmentBySkuAsync(item.SellerSku!, cancellationToken);
                     if (!string.IsNullOrWhiteSpace(lookup.Assignment))
                     {
                         label = lookup.Assignment!;
@@ -32,7 +33,10 @@ namespace meli_znube_integration.Api
                         label = $"ERROR: {lookup.ControlledErrorMessage}";
                     }
                 }
-                results.Add($"{item.Title} → {label}");
+                var titleToShow = !string.IsNullOrWhiteSpace(lookup?.TitleFromZnube)
+                    ? lookup!.TitleFromZnube!
+                    : (!string.IsNullOrWhiteSpace(item.SellerSku) ? item.SellerSku! : "SIN SKU");
+                results.Add($"{titleToShow} → {label}");
             }
             return results;
         }
@@ -41,16 +45,49 @@ namespace meli_znube_integration.Api
         {
             public string? Assignment { get; set; }
             public string? ControlledErrorMessage { get; set; }
+            public string? TitleFromZnube { get; set; }
+        }
+
+        private static string NormalizeSellerSku(string sellerSku)
+        {
+            if (string.IsNullOrWhiteSpace(sellerSku)) return sellerSku;
+            var s = sellerSku.Trim();
+            if (s.Contains("#")) return s;
+
+            if (s.Contains("!"))
+            {
+                var replaced = s.Replace('!', '#');
+                while (replaced.Contains("##"))
+                {
+                    replaced = replaced.Replace("##", "#");
+                }
+                return replaced;
+            }
+
+            if (s.IndexOf("HST", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                var parts = Regex.Split(s, "HST", RegexOptions.IgnoreCase)
+                                  .Select(p => p.Trim())
+                                  .Where(p => !string.IsNullOrWhiteSpace(p))
+                                  .ToArray();
+                if (parts.Length >= 2)
+                {
+                    return string.Join('#', parts);
+                }
+            }
+
+            return s;
         }
 
         private async Task<AssignmentLookup> TryGetAssignmentBySkuAsync(string sellerSku, CancellationToken cancellationToken)
         {
+            var normalizedSku = NormalizeSellerSku(sellerSku);
             var client = _httpClientFactory.CreateClient("znube");
-            using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?sku={Uri.EscapeDataString(sellerSku)}");
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?sku={Uri.EscapeDataString(normalizedSku)}");
             using var res = await client.SendAsync(req, cancellationToken);
             if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
-                return new AssignmentLookup { ControlledErrorMessage = $"SKU {sellerSku} no existe" };
+                return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe" };
             }
             if (!res.IsSuccessStatusCode)
             {
@@ -59,19 +96,20 @@ namespace meli_znube_integration.Api
 
             var body = await res.Content.ReadAsStringAsync(cancellationToken);
             var dto = JsonSerializer.Deserialize<OmnichannelResponse>(body);
-            if (dto?.Data == null)
+            if (dto?.Data == null || dto?.Data.TotalSku == 0)
             {
-                return new AssignmentLookup { ControlledErrorMessage = $"SKU {sellerSku} no existe" };
+                return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe" };
             }
 
             var resources = BuildResourcesMap(dto.Data);
             var skuResourceIdsWithQty = BuildResourceIdsWithQty(dto.Data);
+            var titleFromZnube = BuildTitleFromZnube(dto.Data, normalizedSku);
 
             // Detectar si el SKU no existe en la respuesta
             bool skuPresent = false;
             foreach (var s in dto.Data.Stock)
             {
-                if (!string.IsNullOrWhiteSpace(s.Sku) && string.Equals(s.Sku, sellerSku, StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrWhiteSpace(s.Sku) && string.Equals(s.Sku, normalizedSku, StringComparison.OrdinalIgnoreCase))
                 {
                     skuPresent = true;
                     break;
@@ -81,12 +119,12 @@ namespace meli_znube_integration.Api
             var assignment = ResolveAssignmentFromSku(resources, skuResourceIdsWithQty);
             if (!string.IsNullOrWhiteSpace(assignment))
             {
-                return new AssignmentLookup { Assignment = assignment };
+                return new AssignmentLookup { Assignment = assignment, TitleFromZnube = titleFromZnube };
             }
 
             if (!skuPresent)
             {
-                return new AssignmentLookup { ControlledErrorMessage = $"SKU {sellerSku} no existe" };
+                return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe", TitleFromZnube = titleFromZnube };
             }
 
             // Si hay ambigüedad, reintentar por productId
@@ -96,17 +134,17 @@ namespace meli_znube_integration.Api
                 var byProduct = await TryGetAssignmentByProductIdAsync(productId!, skuResourceIdsWithQty, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(byProduct))
                 {
-                    return new AssignmentLookup { Assignment = byProduct };
+                    return new AssignmentLookup { Assignment = byProduct, TitleFromZnube = titleFromZnube };
                 }
             }
 
             // Si no hay stock en ningún recurso para el SKU
             if (skuResourceIdsWithQty.Count == 0)
             {
-                return new AssignmentLookup { ControlledErrorMessage = $"Sin stock para SKU {sellerSku}" };
+                return new AssignmentLookup { ControlledErrorMessage = $"Sin stock para SKU {normalizedSku}", TitleFromZnube = titleFromZnube };
             }
 
-            return new AssignmentLookup();
+            return new AssignmentLookup { TitleFromZnube = titleFromZnube };
         }
 
         private async Task<string?> TryGetAssignmentByProductIdAsync(string productId, HashSet<string> allowedResourceIds, CancellationToken cancellationToken)
@@ -136,7 +174,7 @@ namespace meli_znube_integration.Api
             var resources = new Dictionary<string, (string Name, double TotalStock)>(StringComparer.OrdinalIgnoreCase);
             foreach (var r in data.Resources)
             {
-                resources[r.ResourceId] = (r.Name ?? string.Empty, r.TotalStock);
+                resources[r.ResourceId] = (r.Name ?? string.Empty, r.TotalStock ?? 0);
             }
             return resources;
         }
@@ -234,6 +272,65 @@ namespace meli_znube_integration.Api
                 }
             }
             return null;
+        }
+
+        private static string? BuildTitleFromZnube(OmnichannelData data, string sellerSku)
+        {
+            if (data == null || string.IsNullOrWhiteSpace(sellerSku))
+            {
+                return null;
+            }
+
+            OmnichannelStockItem? target = null;
+            foreach (var s in data.Stock)
+            {
+                if (!string.IsNullOrWhiteSpace(s.Sku) && string.Equals(s.Sku, sellerSku, StringComparison.OrdinalIgnoreCase))
+                {
+                    target = s;
+                    break;
+                }
+            }
+
+            if (target == null)
+            {
+                return null;
+            }
+
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(target.ProductId))
+            {
+                parts.Add(target.ProductId!);
+            }
+
+            foreach (var v in target.Variants)
+            {
+                string? label = null;
+                foreach (var vt in data.Variants)
+                {
+                    if (!string.IsNullOrWhiteSpace(vt.TypeName) && string.Equals(vt.TypeName, v.VariantType, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.IsNullOrWhiteSpace(v.VariantId) && vt.Names != null && vt.Names.TryGetValue(v.VariantId, out var nameVal))
+                        {
+                            label = nameVal;
+                        }
+                        break;
+                    }
+                }
+                if (string.IsNullOrWhiteSpace(label))
+                {
+                    label = v.VariantId;
+                }
+                if (!string.IsNullOrWhiteSpace(label))
+                {
+                    parts.Add(label!);
+                }
+            }
+
+            if (parts.Count == 0)
+            {
+                return null;
+            }
+            return string.Join(" ", parts);
         }
 
         private static bool IsDepositoName(string? name)
