@@ -48,16 +48,25 @@ namespace meli_znube_integration.Api
                 foreach (var oi in orderItems.EnumerateArray())
                 {
                     string? title = null;
+                    string? sellerSku = null;
                     if (oi.TryGetProperty("item", out var item) && item.ValueKind == JsonValueKind.Object)
                     {
                         if (item.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String)
                         {
                             title = t.GetString();
                         }
+                        if (item.TryGetProperty("seller_sku", out var skuInItem) && skuInItem.ValueKind == JsonValueKind.String)
+                        {
+                            sellerSku = skuInItem.GetString();
+                        }
+                    }
+                    if (string.IsNullOrWhiteSpace(sellerSku) && oi.TryGetProperty("seller_sku", out var sku) && sku.ValueKind == JsonValueKind.String)
+                    {
+                        sellerSku = sku.GetString();
                     }
                     if (!string.IsNullOrWhiteSpace(title))
                     {
-                        items.Add(new MeliOrderItem { Title = title! });
+                        items.Add(new MeliOrderItem { Title = title!, SellerSku = sellerSku });
                     }
                 }
             }
@@ -157,6 +166,7 @@ namespace meli_znube_integration.Api
     public class MeliOrderItem
     {
         public string Title { get; set; } = string.Empty;
+        public string? SellerSku { get; set; }
     }
 }
 

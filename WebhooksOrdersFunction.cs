@@ -12,12 +12,14 @@ namespace meli_znube_integration
     {
         private readonly MeliAuth _auth;
         private readonly MeliClient _meli;
+        private readonly ZnubeClient _znube;
         private readonly ILogger<WebhooksOrdersFunction> _logger;
 
-        public WebhooksOrdersFunction(MeliAuth auth, MeliClient meli, ILogger<WebhooksOrdersFunction> logger)
+        public WebhooksOrdersFunction(MeliAuth auth, MeliClient meli, ZnubeClient znube, ILogger<WebhooksOrdersFunction> logger)
         {
             _auth = auth;
             _meli = meli;
+            _znube = znube;
             _logger = logger;
         }
 
@@ -65,7 +67,7 @@ namespace meli_znube_integration
 
                 var zone = await _meli.TryGetBuyerZoneAsync(order, accessToken);
 
-                var assignments = order.Items.Select(i => $"{i.Title} → Depósito");
+                var assignments = await _znube.GetAssignmentsForOrderAsync(order);
                 var lines = new List<string>();
                 if (!string.IsNullOrWhiteSpace(zone))
                 {
