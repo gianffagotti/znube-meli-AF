@@ -13,7 +13,7 @@ public class NoteService
         _znubeClient = znubeClient;
     }
 
-    public async Task<string?> BuildSingleOrderBodyAsync(MeliOrder order, string accessToken, CancellationToken cancellationToken)
+    public async Task<string?> BuildSingleOrderBodyAsync(MeliOrder order, string accessToken)
     {
         string? zone = null;
         try
@@ -33,7 +33,7 @@ public class NoteService
         }
         catch { }
 
-        var assignments = await _znubeClient.GetAssignmentsForOrderAsync(order, cancellationToken);
+        var assignments = await _znubeClient.GetAssignmentsForOrderAsync(order);
         var lines = new List<string>();
         lines.AddRange(assignments);
         if (!string.IsNullOrWhiteSpace(zone))
@@ -44,7 +44,7 @@ public class NoteService
         return body;
     }
 
-    public async Task<string?> BuildConsolidatedBodyAsync(IEnumerable<MeliOrder> orders, string accessToken, CancellationToken cancellationToken)
+    public async Task<string?> BuildConsolidatedBodyAsync(IEnumerable<MeliOrder> orders, string accessToken)
     {
         var orderList = orders?.Where(o => o != null).ToList() ?? new List<MeliOrder>();
         if (orderList.Count == 0) return null;
@@ -73,7 +73,7 @@ public class NoteService
         var lines = new List<string>();
         foreach (var o in orderList)
         {
-            var ass = await _znubeClient.GetAssignmentsForOrderAsync(o, cancellationToken);
+            var ass = await _znubeClient.GetAssignmentsForOrderAsync(o);
             foreach (var entry in ass)
             {
                 if (string.IsNullOrWhiteSpace(entry)) continue;

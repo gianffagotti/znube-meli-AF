@@ -24,14 +24,14 @@ public class PackLockStoreBlob
         _container.CreateIfNotExists();
     }
 
-    public async Task<(bool Acquired, BlobClient Blob)> TryAcquireAsync(string packId, CancellationToken cancellationToken)
+    public async Task<(bool Acquired, BlobClient Blob)> TryAcquireAsync(string packId)
     {
         var blob = _container.GetBlobClient($"packs/{packId}.lock");
         try
         {
             var content = new BinaryData(Encoding.UTF8.GetBytes(DateTimeOffset.UtcNow.ToString("o")));
             var conditions = new BlobRequestConditions { IfNoneMatch = new ETag("*") };
-            await blob.UploadAsync(content, new BlobUploadOptions { Conditions = conditions }, cancellationToken);
+            await blob.UploadAsync(content, new BlobUploadOptions { Conditions = conditions });
             return (true, blob);
         }
         catch (RequestFailedException ex) when (ex.Status == 412 || ex.Status == 409)
@@ -40,7 +40,7 @@ public class PackLockStoreBlob
         }
     }
 
-    public async Task MarkDoneAsync(BlobClient blob, CancellationToken cancellationToken)
+    public async Task MarkDoneAsync(BlobClient blob)
     {
         try
         {
@@ -49,7 +49,7 @@ public class PackLockStoreBlob
                 ["done"] = "true",
                 ["ts"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString()
             };
-            await blob.SetMetadataAsync(md, cancellationToken: cancellationToken);
+            await blob.SetMetadataAsync(md);
         }
         catch { }
     }

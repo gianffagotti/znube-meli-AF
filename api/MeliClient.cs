@@ -243,20 +243,20 @@ public class MeliClient
         };
     }
 
-    public async Task<List<MeliOrder>> GetOrdersByPackAsync(string packId, string accessToken, CancellationToken cancellationToken = default)
+    public async Task<List<MeliOrder>> GetOrdersByPackAsync(string packId, string accessToken)
     {
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Get, $"packs/{Uri.EscapeDataString(packId)}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        using var res = await client.SendAsync(req, cancellationToken);
+        using var res = await client.SendAsync(req);
         if (!res.IsSuccessStatusCode)
         {
             // Si el endpoint no está disponible, devolver lista vacía y permitir fallback por el caller
             return new List<MeliOrder>();
         }
 
-        var json = await res.Content.ReadAsStringAsync(cancellationToken);
+        var json = await res.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 

@@ -21,14 +21,13 @@ public class WebhooksOrdersFunction
 
     [Function("WebhooksOrders")]
     public async Task<HttpResponseData> Run(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "webhooks/orders")] HttpRequestData req,
-        CancellationToken cancellationToken)
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "webhooks/orders")] HttpRequestData req)
     {
         string? resource = null;
         string? orderId = null;
         try
         {
-            using (var doc = await JsonDocument.ParseAsync(req.Body, default, cancellationToken))
+            using (var doc = await JsonDocument.ParseAsync(req.Body))
             {
                 if (doc.RootElement.TryGetProperty("resource", out var resourceProp) && resourceProp.ValueKind == JsonValueKind.String)
                 {
@@ -57,7 +56,7 @@ public class WebhooksOrdersFunction
                 var resInvalid = req.CreateResponse(HttpStatusCode.OK);
                 return resInvalid;
             }
-            var (orderIdWritten, noteText) = await _processor.ProcessAsync(orderId, cancellationToken);
+            var (orderIdWritten, noteText) = await _processor.ProcessAsync(orderId);
 
             var res = req.CreateResponse(HttpStatusCode.OK);
             if (!string.IsNullOrWhiteSpace(noteText))
@@ -68,6 +67,7 @@ public class WebhooksOrdersFunction
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, ex.Message);
             _logger.LogError(ex, "Error no controlado procesando orden {OrderId}", orderId);
             throw;
         }

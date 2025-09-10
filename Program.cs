@@ -9,7 +9,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddHttpClient("meli", c =>
         {
             c.BaseAddress = new Uri("https://api.mercadolibre.com/");
-            c.Timeout = TimeSpan.FromSeconds(15);
+            c.Timeout = TimeSpan.FromSeconds(45);
         });
 
         services.AddHttpClient("znube", c =>
@@ -19,7 +19,7 @@ var host = Host.CreateDefaultBuilder(args)
             {
                 c.BaseAddress = new Uri(baseUrl);
             }
-            c.Timeout = TimeSpan.FromSeconds(15);
+            c.Timeout = TimeSpan.FromSeconds(45);
             var token = context.Configuration["Znube:Token"];
             if (!string.IsNullOrWhiteSpace(token))
             {

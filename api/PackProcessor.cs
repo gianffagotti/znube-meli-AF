@@ -19,7 +19,7 @@ public class PackProcessor
         _logger = logger;
     }
 
-    public async Task<(string? OrderIdWritten, string? NoteText)> ProcessAsync(string orderIdFromWebhook, CancellationToken cancellationToken)
+    public async Task<(string? OrderIdWritten, string? NoteText)> ProcessAsync(string orderIdFromWebhook)
     {
         var accessToken = await _auth.GetValidAccessTokenAsync();
         var order = await _meli.GetOrderAsync(orderIdFromWebhook, accessToken);
@@ -37,7 +37,7 @@ public class PackProcessor
                 return (orderIdFromWebhook, null);
             }
 
-            var body = await _noteService.BuildSingleOrderBodyAsync(order, accessToken, cancellationToken);
+            var body = await _noteService.BuildSingleOrderBodyAsync(order, accessToken);
             if (string.IsNullOrWhiteSpace(body))
             {
                 return (orderIdFromWebhook, null);
@@ -49,7 +49,7 @@ public class PackProcessor
 
         // Flujo pack
         var packId = order.PackId!;
-        var (acquired, blob) = await _lockStore.TryAcquireAsync(packId, cancellationToken);
+        var (acquired, blob) = await _lockStore.TryAcquireAsync(packId);
         if (!acquired)
         {
             _logger.LogDebug("Lock de pack {PackId} no adquirido, otro proceso lo maneja", packId);
@@ -58,7 +58,7 @@ public class PackProcessor
 
         try
         {
-            var orders = await _meli.GetOrdersByPackAsync(packId, accessToken, cancellationToken);
+            var orders = await _meli.GetOrdersByPackAsync(packId, accessToken);
             if (orders.Count == 0)
             {
                 return (null, null);
@@ -69,7 +69,7 @@ public class PackProcessor
                 .ThenBy(o => TryParseLong(o.Id))
                 .Last();
 
-            var body = await _noteService.BuildConsolidatedBodyAsync(orders, accessToken, cancellationToken);
+            var body = await _noteService.BuildConsolidatedBodyAsync(orders, accessToken);
             if (string.IsNullOrWhiteSpace(body))
             {
                 return (null, null);
@@ -85,7 +85,7 @@ public class PackProcessor
         }
         finally
         {
-            await _lockStore.MarkDoneAsync(blob, cancellationToken);
+            await _lockStore.MarkDoneAsync(blob);
         }
     }
 

@@ -14,7 +14,7 @@ public class ZnubeClient
         _httpClientFactory = httpClientFactory;
     }
 
-    public async Task<IEnumerable<string>> GetAssignmentsForOrderAsync(MeliOrder order, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<string>> GetAssignmentsForOrderAsync(MeliOrder order)
     {
         var results = new List<string>();
         if (order == null || order.Items == null || order.Items.Count == 0)
@@ -35,7 +35,7 @@ public class ZnubeClient
         var lookupTasks = new Dictionary<string, Task<AssignmentLookup>>(StringComparer.OrdinalIgnoreCase);
         foreach (var sku in skuSet)
         {
-            lookupTasks[sku] = TryGetAssignmentBySkuAsync(sku, cancellationToken);
+            lookupTasks[sku] = TryGetAssignmentBySkuAsync(sku);
         }
 
         // Esperar todas las consultas de SKU en paralelo
@@ -121,12 +121,12 @@ public class ZnubeClient
         return s;
     }
 
-    private async Task<AssignmentLookup> TryGetAssignmentBySkuAsync(string sellerSku, CancellationToken cancellationToken)
+    private async Task<AssignmentLookup> TryGetAssignmentBySkuAsync(string sellerSku)
     {
         var normalizedSku = NormalizeSellerSku(sellerSku);
         var client = _httpClientFactory.CreateClient("znube");
         using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?sku={Uri.EscapeDataString(normalizedSku)}");
-        using var res = await client.SendAsync(req, cancellationToken);
+        using var res = await client.SendAsync(req);
         if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe" };
@@ -136,7 +136,7 @@ public class ZnubeClient
             res.EnsureSuccessStatusCode();
         }
 
-        var body = await res.Content.ReadAsStringAsync(cancellationToken);
+        var body = await res.Content.ReadAsStringAsync();
         var dto = JsonSerializer.Deserialize<OmnichannelResponse>(body);
         if (dto?.Data == null || dto?.Data.TotalSku == 0)
         {
@@ -173,7 +173,7 @@ public class ZnubeClient
         string? productId = TryGetProductId(dto.Data);
         if (!string.IsNullOrWhiteSpace(productId))
         {
-            var byProduct = await TryGetAssignmentByProductIdAsync(productId!, skuResourceIdsWithQty, cancellationToken);
+            var byProduct = await TryGetAssignmentByProductIdAsync(productId!, skuResourceIdsWithQty);
             if (!string.IsNullOrWhiteSpace(byProduct))
             {
                 return new AssignmentLookup { Assignment = byProduct, TitleFromZnube = titleFromZnube };
@@ -189,17 +189,17 @@ public class ZnubeClient
         return new AssignmentLookup { TitleFromZnube = titleFromZnube };
     }
 
-    private async Task<string?> TryGetAssignmentByProductIdAsync(string productId, HashSet<string> allowedResourceIds, CancellationToken cancellationToken)
+    private async Task<string?> TryGetAssignmentByProductIdAsync(string productId, HashSet<string> allowedResourceIds)
     {
         var client = _httpClientFactory.CreateClient("znube");
         using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?productId={Uri.EscapeDataString(productId)}");
-        using var res = await client.SendAsync(req, cancellationToken);
+        using var res = await client.SendAsync(req);
         if (!res.IsSuccessStatusCode)
         {
             res.EnsureSuccessStatusCode();
         }
 
-        var body = await res.Content.ReadAsStringAsync(cancellationToken);
+        var body = await res.Content.ReadAsStringAsync();
         var dto = JsonSerializer.Deserialize<OmnichannelResponse>(body);
         if (dto?.Data == null)
         {
