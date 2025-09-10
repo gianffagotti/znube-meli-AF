@@ -91,6 +91,7 @@ public class MeliClient
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Get, $"shipments/{order.ShippingId}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        req.Headers.TryAddWithoutValidation("x-format-new", "true");
 
         using var res = await client.SendAsync(req);
         if (!res.IsSuccessStatusCode)
@@ -101,6 +102,36 @@ public class MeliClient
         var json = await res.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
+        // Nuevo formato: destination.shipping_address.city/state
+        if (root.TryGetProperty("destination", out var destination) && destination.ValueKind == JsonValueKind.Object)
+        {
+            if (destination.TryGetProperty("shipping_address", out var newAddr) && newAddr.ValueKind == JsonValueKind.Object)
+            {
+                string? cityNew = null;
+                string? stateNew = null;
+                if (newAddr.TryGetProperty("city", out var cityObjNew) && cityObjNew.ValueKind == JsonValueKind.Object && cityObjNew.TryGetProperty("name", out var cityNameNew) && cityNameNew.ValueKind == JsonValueKind.String)
+                {
+                    cityNew = cityNameNew.GetString();
+                }
+                if (newAddr.TryGetProperty("state", out var stateObjNew) && stateObjNew.ValueKind == JsonValueKind.Object && stateObjNew.TryGetProperty("name", out var stateNameNew) && stateNameNew.ValueKind == JsonValueKind.String)
+                {
+                    stateNew = stateNameNew.GetString();
+                }
+
+                if (!string.IsNullOrWhiteSpace(cityNew) && !string.IsNullOrWhiteSpace(stateNew))
+                {
+                    return $"{cityNew}, {stateNew}";
+                }
+                if (!string.IsNullOrWhiteSpace(cityNew))
+                {
+                    return cityNew;
+                }
+                if (!string.IsNullOrWhiteSpace(stateNew))
+                {
+                    return stateNew;
+                }
+            }
+        }
         if (root.TryGetProperty("receiver_address", out var addr) && addr.ValueKind == JsonValueKind.Object)
         {
             string? city = null;
