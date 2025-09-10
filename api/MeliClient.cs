@@ -1,4 +1,3 @@
-using System;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -11,48 +10,6 @@ public class MeliClient
     public MeliClient(IHttpClientFactory httpClientFactory)
     {
         _httpClientFactory = httpClientFactory;
-    }
-
-    public async Task<bool> IsFullShipmentAsync(MeliOrder order, string accessToken)
-    {
-        if (order == null || string.IsNullOrWhiteSpace(order.ShippingId))
-        {
-            return false;
-        }
-
-        var client = _httpClientFactory.CreateClient("meli");
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"shipments/{order.ShippingId}");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        req.Headers.TryAddWithoutValidation("x-format-new", "true");
-
-        using var res = await client.SendAsync(req);
-        if (!res.IsSuccessStatusCode)
-        {
-            return false;
-        }
-
-        var json = await res.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-
-        string? logisticType = null;
-        if (root.TryGetProperty("logistic", out var logistic) && logistic.ValueKind == JsonValueKind.Object)
-        {
-            if (logistic.TryGetProperty("type", out var typeEl) && typeEl.ValueKind == JsonValueKind.String)
-            {
-                logisticType = typeEl.GetString();
-            }
-        }
-
-        var envFull = Environment.GetEnvironmentVariable("MELI_LOGISTIC_TYPE_FULL");
-        bool isFull = !string.IsNullOrWhiteSpace(logisticType)
-            && (
-                (!string.IsNullOrWhiteSpace(envFull) && string.Equals(logisticType, envFull, StringComparison.OrdinalIgnoreCase))
-                || string.Equals(logisticType, "full", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(logisticType, "fulfillment", StringComparison.OrdinalIgnoreCase)
-            );
-
-        return isFull;
     }
 
     public sealed class MeliShipmentInfo
@@ -199,6 +156,42 @@ public class MeliClient
         var root = doc.RootElement;
 
         var items = new List<MeliOrderItem>();
+        string? idStr = null;
+        string? packId = null;
+        DateTimeOffset? createdUtc = null;
+        if (root.TryGetProperty("id", out var idEl))
+        {
+            if (idEl.ValueKind == JsonValueKind.Number)
+            {
+                idStr = idEl.GetRawText();
+            }
+            else if (idEl.ValueKind == JsonValueKind.String)
+            {
+                idStr = idEl.GetString();
+            }
+        }
+        if (root.TryGetProperty("pack_id", out var packEl))
+        {
+            if (packEl.ValueKind == JsonValueKind.Number)
+            {
+                packId = packEl.GetRawText();
+            }
+            else if (packEl.ValueKind == JsonValueKind.String)
+            {
+                packId = packEl.GetString();
+            }
+            else if (packEl.ValueKind == JsonValueKind.Null)
+            {
+                packId = null;
+            }
+        }
+        if (root.TryGetProperty("date_created", out var dc) && dc.ValueKind == JsonValueKind.String)
+        {
+            if (DateTimeOffset.TryParse(dc.GetString(), out var parsed))
+            {
+                createdUtc = parsed.ToUniversalTime();
+            }
+        }
         if (root.TryGetProperty("order_items", out var orderItems) && orderItems.ValueKind == JsonValueKind.Array)
         {
             foreach (var oi in orderItems.EnumerateArray())
@@ -243,153 +236,90 @@ public class MeliClient
         return new MeliOrder
         {
             Items = items,
-            ShippingId = shippingId
+            ShippingId = shippingId,
+            Id = idStr,
+            PackId = packId,
+            DateCreatedUtc = createdUtc
         };
     }
 
-    public async Task<string?> TryGetBuyerZoneAsync(MeliOrder order, string accessToken)
+    public async Task<List<MeliOrder>> GetOrdersByPackAsync(string packId, string accessToken, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(order.ShippingId))
-        {
-            return null;
-        }
-
         var client = _httpClientFactory.CreateClient("meli");
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"shipments/{order.ShippingId}");
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"packs/{Uri.EscapeDataString(packId)}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        req.Headers.TryAddWithoutValidation("x-format-new", "true");
 
-        using var res = await client.SendAsync(req);
+        using var res = await client.SendAsync(req, cancellationToken);
         if (!res.IsSuccessStatusCode)
         {
-            return null;
+            // Si el endpoint no está disponible, devolver lista vacía y permitir fallback por el caller
+            return new List<MeliOrder>();
         }
 
-        var json = await res.Content.ReadAsStringAsync();
+        var json = await res.Content.ReadAsStringAsync(cancellationToken);
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
-        // Determinar tipo de envío (logistic.type) y actuar según reglas
-        static bool IsMatch(string? value, string? expected)
+
+        var orderIds = new List<string>();
+        if (root.TryGetProperty("orders", out var ordersEl) && ordersEl.ValueKind == JsonValueKind.Array)
         {
-            if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(expected)) return false;
-            return string.Equals(value.Trim(), expected.Trim(), StringComparison.OrdinalIgnoreCase);
-        }
-        static bool IsAny(string? value, params string[] candidates)
-        {
-            if (string.IsNullOrWhiteSpace(value) || candidates == null || candidates.Length == 0) return false;
-            var v = value.Trim();
-            foreach (var c in candidates)
+            foreach (var entry in ordersEl.EnumerateArray())
             {
-                if (!string.IsNullOrWhiteSpace(c) && string.Equals(v, c.Trim(), StringComparison.OrdinalIgnoreCase))
+                if (entry.ValueKind == JsonValueKind.Object && entry.TryGetProperty("id", out var idEl))
                 {
-                    return true;
+                    string? idStr = null;
+                    if (idEl.ValueKind == JsonValueKind.Number)
+                    {
+                        idStr = idEl.GetRawText();
+                    }
+                    else if (idEl.ValueKind == JsonValueKind.String)
+                    {
+                        idStr = idEl.GetString();
+                    }
+                    if (!string.IsNullOrWhiteSpace(idStr))
+                    {
+                        orderIds.Add(idStr!);
+                    }
                 }
-            }
-            return false;
-        }
-
-        string? logisticType = null;
-        if (root.TryGetProperty("logistic", out var logistic) && logistic.ValueKind == JsonValueKind.Object)
-        {
-            if (logistic.TryGetProperty("type", out var typeEl) && typeEl.ValueKind == JsonValueKind.String)
-            {
-                logisticType = typeEl.GetString();
-            }
-        }
-
-        var envFlex = Environment.GetEnvironmentVariable("MELI_LOGISTIC_TYPE_FLEX");
-        var envFull = Environment.GetEnvironmentVariable("MELI_LOGISTIC_TYPE_FULL");
-        var envRetiro = Environment.GetEnvironmentVariable("MELI_LOGISTIC_TYPE_RETIRO");
-
-        bool isFull = IsMatch(logisticType, envFull) || IsAny(logisticType, "full", "fulfillment");
-        bool isFlex = IsMatch(logisticType, envFlex) || IsAny(logisticType, "flex", "self_service");
-        bool isRetiro = IsMatch(logisticType, envRetiro) || IsAny(logisticType, "pickup", "retiro", "drop_off");
-
-        // Si es FULL o cualquier otro distinto de FLEX, no agregamos zona
-        if (isFull)
-        {
-            return null;
-        }
-        if (!isFlex)
-        {
-            // Incluye RETIRO u otros tipos no FLEX
-            return null;
-        }
-
-        // Nuevo formato: destination.shipping_address.city/state
-        if (root.TryGetProperty("destination", out var destination) && destination.ValueKind == JsonValueKind.Object)
-        {
-            if (destination.TryGetProperty("shipping_address", out var newAddr) && newAddr.ValueKind == JsonValueKind.Object)
-            {
-                string? cityNew = null;
-                string? stateNew = null;
-                if (newAddr.TryGetProperty("city", out var cityObjNew) && cityObjNew.ValueKind == JsonValueKind.Object && cityObjNew.TryGetProperty("name", out var cityNameNew) && cityNameNew.ValueKind == JsonValueKind.String)
+                else if (entry.ValueKind == JsonValueKind.Number)
                 {
-                    cityNew = cityNameNew.GetString();
+                    orderIds.Add(entry.GetRawText());
                 }
-                if (newAddr.TryGetProperty("state", out var stateObjNew) && stateObjNew.ValueKind == JsonValueKind.Object && stateObjNew.TryGetProperty("name", out var stateNameNew) && stateNameNew.ValueKind == JsonValueKind.String)
+                else if (entry.ValueKind == JsonValueKind.String)
                 {
-                    stateNew = stateNameNew.GetString();
-                }
-
-                if (!string.IsNullOrWhiteSpace(cityNew) && !string.IsNullOrWhiteSpace(stateNew))
-                {
-                    return $"{cityNew}, {stateNew}";
-                }
-                if (!string.IsNullOrWhiteSpace(cityNew))
-                {
-                    return cityNew;
-                }
-                if (!string.IsNullOrWhiteSpace(stateNew))
-                {
-                    return stateNew;
+                    var idStr = entry.GetString();
+                    if (!string.IsNullOrWhiteSpace(idStr))
+                    {
+                        orderIds.Add(idStr!);
+                    }
                 }
             }
         }
-        if (root.TryGetProperty("receiver_address", out var addr) && addr.ValueKind == JsonValueKind.Object)
-        {
-            string? city = null;
-            string? state = null;
-            if (addr.TryGetProperty("city", out var cityObj) && cityObj.ValueKind == JsonValueKind.Object && cityObj.TryGetProperty("name", out var cityName) && cityName.ValueKind == JsonValueKind.String)
-            {
-                city = cityName.GetString();
-            }
-            if (addr.TryGetProperty("state", out var stateObj) && stateObj.ValueKind == JsonValueKind.Object && stateObj.TryGetProperty("name", out var stateName) && stateName.ValueKind == JsonValueKind.String)
-            {
-                state = stateName.GetString();
-            }
 
-            if (!string.IsNullOrWhiteSpace(city) && !string.IsNullOrWhiteSpace(state))
-            {
-                return $"{city}, {state}";
-            }
-            if (!string.IsNullOrWhiteSpace(city))
-            {
-                return city;
-            }
-            if (!string.IsNullOrWhiteSpace(state))
-            {
-                return state;
-            }
-        }
-
-        return null;
+        // Recuperar cada orden con detalles para poder construir asignaciones
+        var tasks = orderIds.Select(id => GetOrderAsync(id, accessToken)).ToArray();
+        var orders = await Task.WhenAll(tasks);
+        return orders.Where(o => o != null).Select(o => o!).ToList();
     }
+
+    
+
+    
 
     public async Task UpsertOrderNoteAsync(string orderId, string noteText, string accessToken)
     {
+        return;
+
         if (string.IsNullOrWhiteSpace(orderId) || string.IsNullOrWhiteSpace(noteText))
         {
             return;
         }
 
-        const string autoPrefix = "[AUTO] ";
-
         // Evitar redundancia si ya existe alguna nota automática
         try
         {
             var existingNotes = await GetOrderNotesAsync(orderId, accessToken);
-            if (existingNotes.Any(n => !string.IsNullOrWhiteSpace(n) && n!.StartsWith(autoPrefix, StringComparison.Ordinal)))
+            if (NoteUtils.ContainsAutoNote(existingNotes))
             {
                 return;
             }
@@ -399,7 +329,7 @@ public class MeliClient
             // Si falla la lectura de notas, continuar y dejar que el POST decida
         }
 
-        var finalNote = noteText.StartsWith(autoPrefix, StringComparison.Ordinal) ? noteText : $"{autoPrefix}{noteText}";
+        var finalNote = NoteUtils.EnsureAutoPrefix(noteText);
 
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Post, $"orders/{orderId}/notes");
@@ -409,6 +339,19 @@ public class MeliClient
         if (!res.IsSuccessStatusCode)
         {
             // Permitir que el caller decida cómo manejar el fallo sin loguear aquí
+        }
+    }
+
+    public async Task<bool> HasAutoNoteAsync(string orderId, string accessToken)
+    {
+        try
+        {
+            var notes = await GetOrderNotesAsync(orderId, accessToken);
+            return NoteUtils.ContainsAutoNote(notes);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -461,6 +404,9 @@ public class MeliOrder
 {
     public List<MeliOrderItem> Items { get; set; } = new List<MeliOrderItem>();
     public string? ShippingId { get; set; }
+    public string? Id { get; set; }
+    public string? PackId { get; set; }
+    public DateTimeOffset? DateCreatedUtc { get; set; }
 }
 
 public class MeliOrderItem

@@ -7,7 +7,6 @@ public class MeliAuth
     private readonly TokensStoreBlob _store;
     private readonly IHttpClientFactory _httpClientFactory;
 
-    private static readonly Uri Base = new("https://api.mercadolibre.com/");
 
     public MeliAuth(TokensStoreBlob store, IHttpClientFactory httpClientFactory)
     {
