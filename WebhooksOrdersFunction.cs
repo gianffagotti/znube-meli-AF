@@ -25,14 +25,16 @@ public class WebhooksOrdersFunction
 
     [Function("WebhooksOrders")]
     public async Task<HttpResponseData> Run(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "webhooks/orders")] HttpRequestData req)
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "webhooks/orders")] HttpRequestData req,
+        CancellationToken cancellationToken)
     {
+        const string AutoPrefix = "[AUTO] ";
         string? resource = null;
         string? orderId = null;
         string? noteText = null;
         try
         {
-            using (var doc = await JsonDocument.ParseAsync(req.Body))
+            using (var doc = await JsonDocument.ParseAsync(req.Body, default, cancellationToken))
             {
                 if (doc.RootElement.TryGetProperty("resource", out var resourceProp) && resourceProp.ValueKind == JsonValueKind.String)
                 {
@@ -46,16 +48,30 @@ public class WebhooksOrdersFunction
                 return resEmpty;
             }
 
+            // Aceptar solo recursos de órdenes
+            if (resource!.IndexOf("/orders/", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                var resSkip = req.CreateResponse(HttpStatusCode.OK);
+                return resSkip;
+            }
+
+            // Validaciones tempranas del recurso y orderId
             orderId = ExtractLastSegment(resource!);
+            if (string.IsNullOrWhiteSpace(orderId) || !orderId.Trim().All(char.IsDigit))
+            {
+                _logger.LogDebug("webhook ignorado: resource sin orderId válido: {Resource}", resource);
+                var resInvalid = req.CreateResponse(HttpStatusCode.OK);
+                return resInvalid;
+            }
             var accessToken = await _auth.GetValidAccessTokenAsync();
 
             // Verificación temprana para evitar trabajo innecesario si ya existe una nota automática
             try
             {
-                const string autoPrefix = "[AUTO] ";
                 var existingNotes = await _meli.GetOrderNotesAsync(orderId, accessToken);
-                if (existingNotes.Any(n => !string.IsNullOrWhiteSpace(n) && n!.StartsWith(autoPrefix, StringComparison.Ordinal)))
+                if (existingNotes.Any(n => !string.IsNullOrWhiteSpace(n) && n!.StartsWith(AutoPrefix, StringComparison.Ordinal)))
                 {
+                    _logger.LogDebug("orden {OrderId} ya contiene nota automática, se corta procesamiento", orderId);
                     var resEarly = req.CreateResponse(HttpStatusCode.OK);
                     return resEarly;
                 }
@@ -68,13 +84,36 @@ public class WebhooksOrdersFunction
             var order = await _meli.GetOrderAsync(orderId, accessToken);
             if (order == null)
             {
+                _logger.LogDebug("orden {OrderId} no encontrada, fin", orderId);
                 var resOk = req.CreateResponse(HttpStatusCode.OK);
                 return resOk;
             }
 
-            var zone = await _meli.TryGetBuyerZoneAsync(order, accessToken);
+            // Obtener shipment una sola vez: tipo y zona
+            string? zone = null;
+            try
+            {
+                var shipment = await _meli.GetShipmentInfoAsync(order, accessToken);
+                if (shipment != null)
+                {
+                    if (shipment.IsFull)
+                    {
+                        _logger.LogDebug("orden {OrderId} con logística FULL, se omite", orderId);
+                        var resEarlyFull2 = req.CreateResponse(HttpStatusCode.OK);
+                        return resEarlyFull2;
+                    }
+                    if (shipment.IsFlex)
+                    {
+                        zone = shipment.Zone;
+                    }
+                }
+            }
+            catch
+            {
+                // si falla, continuar sin zona
+            }
 
-            var assignments = await _znube.GetAssignmentsForOrderAsync(order);
+            var assignments = await _znube.GetAssignmentsForOrderAsync(order, cancellationToken);
             var lines = new List<string>();
             lines.AddRange(assignments);
             if (!string.IsNullOrWhiteSpace(zone))
@@ -91,8 +130,7 @@ public class WebhooksOrdersFunction
                 await res.WriteStringAsync(noteText, Encoding.UTF8);
             }
 
-            _logger.LogInformation("noteText compuesto: {NoteText}", noteText);
-            _logger.LogInformation("Orden {OrderId} procesada correctamente.", orderId);
+            _logger.LogInformation("Orden {OrderId} procesada correctamente con {Items} ítems. Zona: {Zone}", orderId, order.Items?.Count ?? 0, zone ?? "-");
 
             return res;
         }

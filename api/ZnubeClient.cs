@@ -17,13 +17,54 @@ public class ZnubeClient
     public async Task<IEnumerable<string>> GetAssignmentsForOrderAsync(MeliOrder order, CancellationToken cancellationToken = default)
     {
         var results = new List<string>();
+        if (order == null || order.Items == null || order.Items.Count == 0)
+        {
+            return results;
+        }
+
+        // Deduplicar SKUs y resolver en paralelo para acelerar respuesta
+        var skuSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var it in order.Items)
+        {
+            if (!string.IsNullOrWhiteSpace(it.SellerSku))
+            {
+                skuSet.Add(it.SellerSku!.Trim());
+            }
+        }
+
+        var lookupTasks = new Dictionary<string, Task<AssignmentLookup>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sku in skuSet)
+        {
+            lookupTasks[sku] = TryGetAssignmentBySkuAsync(sku, cancellationToken);
+        }
+
+        // Esperar todas las consultas de SKU en paralelo
+        await Task.WhenAll(lookupTasks.Values);
+
+        var lookupBySku = new Dictionary<string, AssignmentLookup>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kvp in lookupTasks)
+        {
+            // Si alguna falla por excepción, devolvemos un objeto con error controlado genérico
+            AssignmentLookup value;
+            try
+            {
+                value = kvp.Value.Result;
+            }
+            catch (Exception ex)
+            {
+                value = new AssignmentLookup { ControlledErrorMessage = $"Fallo consulta SKU {kvp.Key}: {ex.Message}" };
+            }
+            lookupBySku[kvp.Key] = value;
+        }
+
+        // Componer resultados por ítem manteniendo el orden original
         foreach (var item in order.Items)
         {
             string label = "Sin asignación";
             AssignmentLookup? lookup = null;
-            if (!string.IsNullOrWhiteSpace(item.SellerSku))
+            if (!string.IsNullOrWhiteSpace(item.SellerSku) && lookupBySku.TryGetValue(item.SellerSku!, out var lkp))
             {
-                lookup = await TryGetAssignmentBySkuAsync(item.SellerSku!, cancellationToken);
+                lookup = lkp;
                 if (!string.IsNullOrWhiteSpace(lookup.Assignment))
                 {
                     label = lookup.Assignment!;
@@ -38,6 +79,7 @@ public class ZnubeClient
                 : item.Title;
             results.Add($"{titleToShow} → {label}");
         }
+
         return results;
     }
 
