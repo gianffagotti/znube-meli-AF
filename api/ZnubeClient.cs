@@ -65,8 +65,48 @@ public class ZnubeClient
             if (!string.IsNullOrWhiteSpace(item.SellerSku) && lookupBySku.TryGetValue(item.SellerSku!, out var lkp))
             {
                 lookup = lkp;
-                if (!string.IsNullOrWhiteSpace(lookup.Assignment))
+                // Construir asignación teniendo en cuenta cantidades parciales por recurso
+                if (lookup.ResourceStocks != null && lookup.ResourceStocks.Count > 0 && item.Quantity > 0)
                 {
+                    int remaining = item.Quantity;
+                    var segments = new List<(string ResourceName, int Qty)>();
+
+                    // Priorizar Depósito primero, luego el resto por cantidad descendente
+                    var ordered = lookup.ResourceStocks
+                        .OrderByDescending(rs => IsDepositoName(rs.ResourceName))
+                        .ThenByDescending(rs => rs.QuantityForSku)
+                        .ToList();
+
+                    foreach (var rs in ordered)
+                    {
+                        if (remaining <= 0) break;
+                        var available = rs.QuantityForSku > 0 ? (int)Math.Floor(rs.QuantityForSku) : 0;
+                        if (available <= 0) continue;
+                        var take = Math.Min(remaining, available);
+                        if (take > 0)
+                        {
+                            segments.Add((rs.ResourceName, take));
+                            remaining -= take;
+                        }
+                    }
+
+                    if (segments.Count > 0)
+                    {
+                        label = string.Join(" + ", segments.Select(s => $"{s.ResourceName} x{s.Qty}"));
+                        if (remaining > 0)
+                        {
+                            // Indicar remanente sin stock asignable
+                            label += $" + Sin stock x{remaining}";
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(lookup.ControlledErrorMessage))
+                    {
+                        label = $"ERROR: {lookup.ControlledErrorMessage}";
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(lookup.Assignment))
+                {
+                    // Fallback heredado si no hay detalle por recurso
                     label = lookup.Assignment!;
                 }
                 else if (!string.IsNullOrWhiteSpace(lookup.ControlledErrorMessage))
@@ -89,6 +129,14 @@ public class ZnubeClient
         public string? Assignment { get; set; }
         public string? ControlledErrorMessage { get; set; }
         public string? TitleFromZnube { get; set; }
+        public List<ResourceSkuStock> ResourceStocks { get; set; } = new List<ResourceSkuStock>();
+    }
+
+    private sealed class ResourceSkuStock
+    {
+        public string ResourceId { get; set; } = string.Empty;
+        public string ResourceName { get; set; } = string.Empty;
+        public double QuantityForSku { get; set; }
     }
 
     private static string NormalizeSellerSku(string sellerSku)
@@ -148,6 +196,36 @@ public class ZnubeClient
         var skuResourceIdsWithQty = BuildResourceIdsWithQty(dto.Data);
         var titleFromZnube = BuildTitleFromZnube(dto.Data, normalizedSku);
 
+        // Detalle por recurso del SKU para poder asignar cantidades parciales
+        var resourceStocks = new List<ResourceSkuStock>();
+        OmnichannelStockItem? skuItem = null;
+        foreach (var s in dto.Data.Stock)
+        {
+            if (!string.IsNullOrWhiteSpace(s.Sku) && string.Equals(s.Sku, normalizedSku, StringComparison.OrdinalIgnoreCase))
+            {
+                skuItem = s;
+                break;
+            }
+        }
+        if (skuItem != null)
+        {
+            foreach (var st in skuItem.Stock)
+            {
+                if (st.Quantity > 0.0 && !string.IsNullOrWhiteSpace(st.ResourceId))
+                {
+                    if (resources.TryGetValue(st.ResourceId, out var info))
+                    {
+                        resourceStocks.Add(new ResourceSkuStock
+                        {
+                            ResourceId = st.ResourceId,
+                            ResourceName = info.Name ?? string.Empty,
+                            QuantityForSku = st.Quantity
+                        });
+                    }
+                }
+            }
+        }
+
         // Detectar si el SKU no existe en la respuesta
         bool skuPresent = false;
         foreach (var s in dto.Data.Stock)
@@ -162,12 +240,12 @@ public class ZnubeClient
         var assignment = ResolveAssignmentFromSku(resources, skuResourceIdsWithQty);
         if (!string.IsNullOrWhiteSpace(assignment))
         {
-            return new AssignmentLookup { Assignment = assignment, TitleFromZnube = titleFromZnube };
+            return new AssignmentLookup { Assignment = assignment, TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
         }
 
         if (!skuPresent)
         {
-            return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe", TitleFromZnube = titleFromZnube };
+            return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe", TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
         }
 
         // Si hay ambigüedad, reintentar por productId
@@ -177,17 +255,17 @@ public class ZnubeClient
             var byProduct = await TryGetAssignmentByProductIdAsync(productId!, skuResourceIdsWithQty);
             if (!string.IsNullOrWhiteSpace(byProduct))
             {
-                return new AssignmentLookup { Assignment = byProduct, TitleFromZnube = titleFromZnube };
+                return new AssignmentLookup { Assignment = byProduct, TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
             }
         }
 
         // Si no hay stock en ningún recurso para el SKU
         if (skuResourceIdsWithQty.Count == 0)
         {
-            return new AssignmentLookup { ControlledErrorMessage = $"Sin stock para SKU {normalizedSku}", TitleFromZnube = titleFromZnube };
+            return new AssignmentLookup { ControlledErrorMessage = $"Sin stock para SKU {normalizedSku}", TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
         }
 
-        return new AssignmentLookup { TitleFromZnube = titleFromZnube };
+        return new AssignmentLookup { TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
     }
 
     private async Task<string?> TryGetAssignmentByProductIdAsync(string productId, HashSet<string> allowedResourceIds)

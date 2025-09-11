@@ -330,8 +330,6 @@ public class MeliClient
 
     public async Task UpsertOrderNoteAsync(string orderId, string noteText, string accessToken)
     {
-        return;
-
         if (string.IsNullOrWhiteSpace(orderId) || string.IsNullOrWhiteSpace(noteText))
         {
             return;
