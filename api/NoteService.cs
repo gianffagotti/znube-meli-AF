@@ -33,9 +33,8 @@ public class NoteService
         }
         catch { }
 
-        var assignments = await _znubeClient.GetAssignmentsForOrderAsync(order);
-        var lines = new List<string>();
-        lines.AddRange(assignments);
+        var allocations = await _znubeClient.GetAllocationsForOrderAsync(order);
+        var lines = BuildGroupedLines(allocations);
         if (!string.IsNullOrWhiteSpace(zone))
         {
             lines.Add($"({zone})");
@@ -68,21 +67,17 @@ public class NoteService
         }
         catch { }
 
-        // Consolidar líneas de todas las órdenes (únicas, preservando orden de aparición)
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var lines = new List<string>();
+        // Consolidar asignaciones estructuradas de todas las órdenes
+        var globalAllocations = new List<ZnubeClient.AllocationEntry>();
         foreach (var o in orderList)
         {
-            var ass = await _znubeClient.GetAssignmentsForOrderAsync(o);
-            foreach (var entry in ass)
+            var allocs = await _znubeClient.GetAllocationsForOrderAsync(o);
+            if (allocs != null && allocs.Count > 0)
             {
-                if (string.IsNullOrWhiteSpace(entry)) continue;
-                if (seen.Add(entry))
-                {
-                    lines.Add(entry);
-                }
+                globalAllocations.AddRange(allocs);
             }
         }
+        var lines = BuildGroupedLines(globalAllocations);
         if (!string.IsNullOrWhiteSpace(zone))
         {
             lines.Add($"({zone})");
@@ -114,6 +109,73 @@ public class NoteService
         var lines = text.Split('\n');
         var clean = lines.Select(l => (l ?? string.Empty).Trim()).Where(l => !string.IsNullOrWhiteSpace(l));
         return string.Join("\n", clean);
+    }
+
+    private static List<string> BuildGroupedLines(IEnumerable<ZnubeClient.AllocationEntry> allocations)
+    {
+        var result = new List<string>();
+        if (allocations == null) return result;
+
+        // Mantener orden de aparición de asignaciones y de productos dentro de cada asignación
+        var assignmentOrder = new List<string>();
+        var byAssignment = new Dictionary<string, AssignmentGroup>(StringComparer.Ordinal);
+
+        foreach (var a in allocations)
+        {
+            if (a == null) continue;
+            var assignment = a.AssignmentName ?? string.Empty;
+            var product = a.ProductLabel ?? string.Empty;
+            var qty = a.Quantity;
+            if (!byAssignment.TryGetValue(assignment, out var group))
+            {
+                group = new AssignmentGroup();
+                byAssignment[assignment] = group;
+                assignmentOrder.Add(assignment);
+            }
+            group.Add(product, qty);
+        }
+
+        foreach (var assignment in assignmentOrder)
+        {
+            if (!byAssignment.TryGetValue(assignment, out var group)) continue;
+            var parts = new List<string>();
+            foreach (var p in group.ProductOrder)
+            {
+                var q = group.ProductToQty[p];
+                var suffix = q > 1 ? $" x{q}" : string.Empty;
+                parts.Add(p + suffix);
+            }
+            var line = string.IsNullOrWhiteSpace(assignment)
+                ? string.Join(" + ", parts)
+                : $"{assignment}: " + string.Join(" + ", parts);
+            if (!string.IsNullOrWhiteSpace(line))
+            {
+                result.Add(line);
+            }
+        }
+
+        return result;
+    }
+
+    private sealed class AssignmentGroup
+    {
+        public List<string> ProductOrder { get; } = new List<string>();
+        public Dictionary<string, int> ProductToQty { get; } = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        public void Add(string product, int qty)
+        {
+            if (string.IsNullOrWhiteSpace(product)) return;
+            if (qty <= 0) qty = 1;
+            if (!ProductToQty.ContainsKey(product))
+            {
+                ProductOrder.Add(product);
+                ProductToQty[product] = qty;
+            }
+            else
+            {
+                ProductToQty[product] += qty;
+            }
+        }
     }
 
     private static long TryParseLong(string? s)

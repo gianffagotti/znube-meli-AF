@@ -117,11 +117,119 @@ public class ZnubeClient
             var titleToShow = !string.IsNullOrWhiteSpace(lookup?.TitleFromZnube)
                 ? lookup!.TitleFromZnube!
                 : item.Title;
-            var qty = item.Quantity > 1 ? $" x{item.Quantity}" : string.Empty;
-            results.Add($"{titleToShow}{qty} → {label}");
+            results.Add($"{titleToShow} → {label}");
         }
 
         return results;
+    }
+
+    public sealed class AllocationEntry
+    {
+        public string ProductLabel { get; set; } = string.Empty;
+        public string AssignmentName { get; set; } = string.Empty;
+        public int Quantity { get; set; }
+    }
+
+    public async Task<List<AllocationEntry>> GetAllocationsForOrderAsync(MeliOrder order)
+    {
+        var allocations = new List<AllocationEntry>();
+        if (order == null || order.Items == null || order.Items.Count == 0)
+        {
+            return allocations;
+        }
+
+        // Deduplicar SKUs y resolver en paralelo para acelerar respuesta
+        var skuSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var it in order.Items)
+        {
+            if (!string.IsNullOrWhiteSpace(it.SellerSku))
+            {
+                skuSet.Add(it.SellerSku!.Trim());
+            }
+        }
+
+        var lookupTasks = new Dictionary<string, Task<AssignmentLookup>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sku in skuSet)
+        {
+            lookupTasks[sku] = TryGetAssignmentBySkuAsync(sku);
+        }
+
+        await Task.WhenAll(lookupTasks.Values);
+
+        var lookupBySku = new Dictionary<string, AssignmentLookup>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kvp in lookupTasks)
+        {
+            AssignmentLookup value;
+            try
+            {
+                value = kvp.Value.Result;
+            }
+            catch (Exception ex)
+            {
+                value = new AssignmentLookup { ControlledErrorMessage = $"Fallo consulta SKU {kvp.Key}: {ex.Message}" };
+            }
+            lookupBySku[kvp.Key] = value;
+        }
+
+        // Asignar por ítem manteniendo orden original, dividiendo cantidad en recursos
+        foreach (var item in order.Items)
+        {
+            if (item == null) continue;
+            var productLabel = item.Title;
+            AssignmentLookup? lookup = null;
+            if (!string.IsNullOrWhiteSpace(item.SellerSku) && lookupBySku.TryGetValue(item.SellerSku!, out var lkp))
+            {
+                lookup = lkp;
+                if (!string.IsNullOrWhiteSpace(lookup.TitleFromZnube))
+                {
+                    productLabel = lookup.TitleFromZnube!;
+                }
+            }
+
+            int remaining = Math.Max(0, item.Quantity);
+
+            if (lookup != null && lookup.ResourceStocks != null && lookup.ResourceStocks.Count > 0 && remaining > 0)
+            {
+                var ordered = lookup.ResourceStocks
+                    .OrderByDescending(rs => IsDepositoName(rs.ResourceName))
+                    .ThenByDescending(rs => rs.QuantityForSku)
+                    .ToList();
+
+                foreach (var rs in ordered)
+                {
+                    if (remaining <= 0) break;
+                    var available = rs.QuantityForSku > 0 ? (int)Math.Floor(rs.QuantityForSku) : 0;
+                    if (available <= 0) continue;
+                    var take = Math.Min(remaining, available);
+                    if (take > 0)
+                    {
+                        allocations.Add(new AllocationEntry
+                        {
+                            ProductLabel = productLabel,
+                            AssignmentName = rs.ResourceName,
+                            Quantity = take
+                        });
+                        remaining -= take;
+                    }
+                }
+            }
+
+            if (remaining > 0)
+            {
+                // Fallback: si existe asignación simple, usarla; de lo contrario, marcar "Sin asignación"
+                string assignment = !string.IsNullOrWhiteSpace(lookup?.Assignment)
+                    ? lookup!.Assignment!
+                    : "Sin asignación";
+                allocations.Add(new AllocationEntry
+                {
+                    ProductLabel = productLabel,
+                    AssignmentName = assignment,
+                    Quantity = remaining
+                });
+            }
+        }
+
+        return allocations;
     }
 
     private sealed class AssignmentLookup

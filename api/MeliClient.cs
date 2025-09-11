@@ -75,26 +75,14 @@ public class MeliClient
             if (destination.TryGetProperty("shipping_address", out var newAddr) && newAddr.ValueKind == JsonValueKind.Object)
             {
                 string? cityNew = null;
-                string? stateNew = null;
                 if (newAddr.TryGetProperty("city", out var cityObjNew) && cityObjNew.ValueKind == JsonValueKind.Object && cityObjNew.TryGetProperty("name", out var cityNameNew) && cityNameNew.ValueKind == JsonValueKind.String)
                 {
                     cityNew = cityNameNew.GetString();
                 }
-                if (newAddr.TryGetProperty("state", out var stateObjNew) && stateObjNew.ValueKind == JsonValueKind.Object && stateObjNew.TryGetProperty("name", out var stateNameNew) && stateNameNew.ValueKind == JsonValueKind.String)
-                {
-                    stateNew = stateNameNew.GetString();
-                }
-                if (!string.IsNullOrWhiteSpace(cityNew) && !string.IsNullOrWhiteSpace(stateNew))
-                {
-                    zone = $"{cityNew}, {stateNew}";
-                }
-                else if (!string.IsNullOrWhiteSpace(cityNew))
+                
+                if (!string.IsNullOrWhiteSpace(cityNew))
                 {
                     zone = cityNew;
-                }
-                else if (!string.IsNullOrWhiteSpace(stateNew))
-                {
-                    zone = stateNew;
                 }
             }
         }
@@ -103,26 +91,13 @@ public class MeliClient
             if (root.TryGetProperty("receiver_address", out var addr) && addr.ValueKind == JsonValueKind.Object)
             {
                 string? city = null;
-                string? state = null;
                 if (addr.TryGetProperty("city", out var cityObj) && cityObj.ValueKind == JsonValueKind.Object && cityObj.TryGetProperty("name", out var cityName) && cityName.ValueKind == JsonValueKind.String)
                 {
                     city = cityName.GetString();
                 }
-                if (addr.TryGetProperty("state", out var stateObj) && stateObj.ValueKind == JsonValueKind.Object && stateObj.TryGetProperty("name", out var stateName) && stateName.ValueKind == JsonValueKind.String)
-                {
-                    state = stateName.GetString();
-                }
-                if (!string.IsNullOrWhiteSpace(city) && !string.IsNullOrWhiteSpace(state))
-                {
-                    zone = $"{city}, {state}";
-                }
-                else if (!string.IsNullOrWhiteSpace(city))
+                if (!string.IsNullOrWhiteSpace(city))
                 {
                     zone = city;
-                }
-                else if (!string.IsNullOrWhiteSpace(state))
-                {
-                    zone = state;
                 }
             }
         }
