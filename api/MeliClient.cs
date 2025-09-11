@@ -198,6 +198,7 @@ public class MeliClient
             {
                 string? title = null;
                 string? sellerSku = null;
+                int quantity = 1;
                 if (oi.TryGetProperty("item", out var item) && item.ValueKind == JsonValueKind.Object)
                 {
                     if (item.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String)
@@ -213,9 +214,30 @@ public class MeliClient
                 {
                     sellerSku = sku.GetString();
                 }
+                if (oi.TryGetProperty("quantity", out var qEl))
+                {
+                    if (qEl.ValueKind == JsonValueKind.Number)
+                    {
+                        if (!qEl.TryGetInt32(out quantity))
+                        {
+                            // fallback si viene como double
+                            var raw = qEl.GetRawText();
+                            if (int.TryParse(raw, out var qi)) quantity = qi;
+                        }
+                    }
+                    else if (qEl.ValueKind == JsonValueKind.String)
+                    {
+                        var s = qEl.GetString();
+                        if (!string.IsNullOrWhiteSpace(s) && int.TryParse(s, out var qi))
+                        {
+                            quantity = qi;
+                        }
+                    }
+                    if (quantity <= 0) quantity = 1;
+                }
                 if (!string.IsNullOrWhiteSpace(title))
                 {
-                    items.Add(new MeliOrderItem { Title = title!, SellerSku = sellerSku });
+                    items.Add(new MeliOrderItem { Title = title!, SellerSku = sellerSku, Quantity = quantity });
                 }
             }
         }
@@ -413,6 +435,7 @@ public class MeliOrderItem
 {
     public string Title { get; set; } = string.Empty;
     public string? SellerSku { get; set; }
+    public int Quantity { get; set; } = 1;
 }
 
 

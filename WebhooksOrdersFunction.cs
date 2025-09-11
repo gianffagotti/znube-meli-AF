@@ -57,6 +57,7 @@ public class WebhooksOrdersFunction
                 return resInvalid;
             }
             var (orderIdWritten, noteText) = await _processor.ProcessAsync(orderId);
+            _logger.LogInformation($"Nota: {noteText}");
 
             var res = req.CreateResponse(HttpStatusCode.OK);
             if (!string.IsNullOrWhiteSpace(noteText))

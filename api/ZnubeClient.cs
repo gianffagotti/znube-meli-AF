@@ -77,7 +77,8 @@ public class ZnubeClient
             var titleToShow = !string.IsNullOrWhiteSpace(lookup?.TitleFromZnube)
                 ? lookup!.TitleFromZnube!
                 : item.Title;
-            results.Add($"{titleToShow} → {label}");
+            var qty = item.Quantity > 1 ? $" x{item.Quantity}" : string.Empty;
+            results.Add($"{titleToShow}{qty} → {label}");
         }
 
         return results;
@@ -143,7 +144,7 @@ public class ZnubeClient
             return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe" };
         }
 
-        var resources = BuildResourcesMap(dto.Data);
+        var resources = BuildResourcesMap(dto!.Data);
         var skuResourceIdsWithQty = BuildResourceIdsWithQty(dto.Data);
         var titleFromZnube = BuildTitleFromZnube(dto.Data, normalizedSku);
 
