@@ -23,7 +23,7 @@ public class PackProcessor
     {
         var accessToken = await _auth.GetValidAccessTokenAsync();
         var order = await _meli.GetOrderAsync(orderIdFromWebhook, accessToken);
-        if (order == null)
+        if (order == null || order.DateCreatedUtc < DateTime.UtcNow.AddHours(-24))
         {
             return (null, null);
         }

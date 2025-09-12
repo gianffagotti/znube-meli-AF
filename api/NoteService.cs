@@ -3,6 +3,7 @@ namespace meli_znube_integration.Api;
 public class NoteService
 {
     private const int MaxNoteLength = 300;
+    private const string Other24hTag = "(TOC)";
 
     private readonly MeliClient _meliClient;
     private readonly ZnubeClient _znubeClient;
@@ -39,6 +40,25 @@ public class NoteService
         {
             lines.Add($"({zone})");
         }
+
+        // Chequeo 24h: ¿el comprador hizo otra compra en las últimas 24 horas?
+        try
+        {
+            var sellerId = Environment.GetEnvironmentVariable("MELI_SELLER_ID");
+            if (!string.IsNullOrWhiteSpace(sellerId)
+                && order.DateCreatedUtc.HasValue
+                && !string.IsNullOrWhiteSpace(order.BuyerNickname))
+            {
+                var to = order.DateCreatedUtc.Value;
+                var from = to.AddHours(-24);
+                var hasOther = await _meliClient.HasTwoOrMoreOrdersByBuyerAsync(from, to, order.BuyerNickname!, sellerId!, accessToken);
+                if (hasOther)
+                {
+                    lines.Add(Other24hTag);
+                }
+            }
+        }
+        catch { }
         var body = string.Join("\n", lines);
         return body;
     }
@@ -82,6 +102,25 @@ public class NoteService
         {
             lines.Add($"({zone})");
         }
+
+        // Chequeo 24h para packs, usando la última orden como referencia
+        try
+        {
+            var sellerId = Environment.GetEnvironmentVariable("MELI_SELLER_ID");
+            if (!string.IsNullOrWhiteSpace(sellerId)
+                && last.DateCreatedUtc.HasValue
+                && !string.IsNullOrWhiteSpace(last.BuyerNickname))
+            {
+                var to = last.DateCreatedUtc.Value;
+                var from = to.AddHours(-24);
+                var hasOther = await _meliClient.HasTwoOrMoreOrdersByBuyerAsync(from, to, last.BuyerNickname!, sellerId!, accessToken);
+                if (hasOther)
+                {
+                    lines.Add(Other24hTag);
+                }
+            }
+        }
+        catch { }
         return string.Join("\n", lines);
     }
 

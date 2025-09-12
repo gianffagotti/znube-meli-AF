@@ -134,6 +134,7 @@ public class MeliClient
         string? idStr = null;
         string? packId = null;
         DateTimeOffset? createdUtc = null;
+        string? buyerNickname = null;
         if (root.TryGetProperty("id", out var idEl))
         {
             if (idEl.ValueKind == JsonValueKind.Number)
@@ -217,6 +218,15 @@ public class MeliClient
             }
         }
 
+        // buyer.nickname
+        if (root.TryGetProperty("buyer", out var buyer) && buyer.ValueKind == JsonValueKind.Object)
+        {
+            if (buyer.TryGetProperty("nickname", out var nick) && nick.ValueKind == JsonValueKind.String)
+            {
+                buyerNickname = nick.GetString();
+            }
+        }
+
         string? shippingId = null;
         if (root.TryGetProperty("shipping", out var shipping) && shipping.ValueKind == JsonValueKind.Object)
         {
@@ -236,7 +246,8 @@ public class MeliClient
             ShippingId = shippingId,
             Id = idStr,
             PackId = packId,
-            DateCreatedUtc = createdUtc
+            DateCreatedUtc = createdUtc,
+            BuyerNickname = buyerNickname
         };
     }
 
@@ -393,6 +404,92 @@ public class MeliClient
 
         return notes;
     }
+
+    public async Task<bool> HasTwoOrMoreOrdersByBuyerAsync(
+        DateTimeOffset fromDate,
+        DateTimeOffset toDate,
+        string buyerNickname,
+        string sellerId,
+        string accessToken)
+    {
+        if (string.IsNullOrWhiteSpace(buyerNickname) || string.IsNullOrWhiteSpace(sellerId) || string.IsNullOrWhiteSpace(accessToken))
+        {
+            return false;
+        }
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient("meli");
+
+            if (fromDate > toDate)
+            {
+                var tmp = fromDate; fromDate = toDate; toDate = tmp;
+            }
+
+            string fromParam = fromDate.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz");
+            string toParam = toDate.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz");
+
+            var uri = "orders/search?seller=" + Uri.EscapeDataString(sellerId)
+                      + "&order.date_created.from=" + Uri.EscapeDataString(fromParam)
+                      + "&order.date_created.to=" + Uri.EscapeDataString(toParam)
+                      + "&q=" + Uri.EscapeDataString(buyerNickname)
+                      + "&limit=2";
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+            using var res = await client.SendAsync(req);
+            if (!res.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            var json = await res.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+            {
+                if (results.GetArrayLength() >= 2)
+                {
+                    return true;
+                }
+            }
+
+            if (root.TryGetProperty("paging", out var paging) && paging.ValueKind == JsonValueKind.Object)
+            {
+                if (paging.TryGetProperty("total", out var totalEl))
+                {
+                    if (totalEl.ValueKind == JsonValueKind.Number)
+                    {
+                        if (totalEl.TryGetInt32(out var total))
+                        {
+                            return total >= 2;
+                        }
+                        var raw = totalEl.GetRawText();
+                        if (int.TryParse(raw, out var totalParsed))
+                        {
+                            return totalParsed >= 2;
+                        }
+                    }
+                    else if (totalEl.ValueKind == JsonValueKind.String)
+                    {
+                        var s = totalEl.GetString();
+                        if (!string.IsNullOrWhiteSpace(s) && int.TryParse(s, out var totalParsed))
+                        {
+                            return totalParsed >= 2;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
 
 public class MeliOrder
@@ -402,6 +499,7 @@ public class MeliOrder
     public string? Id { get; set; }
     public string? PackId { get; set; }
     public DateTimeOffset? DateCreatedUtc { get; set; }
+    public string? BuyerNickname { get; set; }
 }
 
 public class MeliOrderItem
