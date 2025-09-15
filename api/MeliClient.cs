@@ -432,8 +432,7 @@ public class MeliClient
             var uri = "orders/search?seller=" + Uri.EscapeDataString(sellerId)
                       + "&order.date_created.from=" + Uri.EscapeDataString(fromParam)
                       + "&order.date_created.to=" + Uri.EscapeDataString(toParam)
-                      + "&q=" + Uri.EscapeDataString(buyerNickname)
-                      + "&limit=2";
+                      + "&q=" + Uri.EscapeDataString(buyerNickname);
 
             using var req = new HttpRequestMessage(HttpMethod.Get, uri);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
@@ -450,34 +449,48 @@ public class MeliClient
 
             if (root.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
             {
-                if (results.GetArrayLength() >= 2)
+                var uniquePedidoKeys = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var r in results.EnumerateArray())
                 {
-                    return true;
-                }
-            }
+                    if (r.ValueKind != JsonValueKind.Object) continue;
 
-            if (root.TryGetProperty("paging", out var paging) && paging.ValueKind == JsonValueKind.Object)
-            {
-                if (paging.TryGetProperty("total", out var totalEl))
-                {
-                    if (totalEl.ValueKind == JsonValueKind.Number)
+                    string? packKey = null;
+                    if (r.TryGetProperty("pack_id", out var packEl))
                     {
-                        if (totalEl.TryGetInt32(out var total))
+                        if (packEl.ValueKind == JsonValueKind.Number)
                         {
-                            return total >= 2;
+                            packKey = packEl.GetRawText();
                         }
-                        var raw = totalEl.GetRawText();
-                        if (int.TryParse(raw, out var totalParsed))
+                        else if (packEl.ValueKind == JsonValueKind.String)
                         {
-                            return totalParsed >= 2;
+                            packKey = packEl.GetString();
+                        }
+                        else if (packEl.ValueKind == JsonValueKind.Null)
+                        {
+                            packKey = null;
                         }
                     }
-                    else if (totalEl.ValueKind == JsonValueKind.String)
+
+                    string? idKey = null;
+                    if (r.TryGetProperty("id", out var idEl))
                     {
-                        var s = totalEl.GetString();
-                        if (!string.IsNullOrWhiteSpace(s) && int.TryParse(s, out var totalParsed))
+                        if (idEl.ValueKind == JsonValueKind.Number)
                         {
-                            return totalParsed >= 2;
+                            idKey = idEl.GetRawText();
+                        }
+                        else if (idEl.ValueKind == JsonValueKind.String)
+                        {
+                            idKey = idEl.GetString();
+                        }
+                    }
+
+                    var key = packKey ?? idKey;
+                    if (!string.IsNullOrWhiteSpace(key))
+                    {
+                        uniquePedidoKeys.Add(key!);
+                        if (uniquePedidoKeys.Count >= 2)
+                        {
+                            return true;
                         }
                     }
                 }
