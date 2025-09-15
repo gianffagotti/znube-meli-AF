@@ -184,9 +184,10 @@ public class NoteService
                 var suffix = q > 1 ? $" x{q}" : string.Empty;
                 parts.Add(p + suffix);
             }
-            var line = string.IsNullOrWhiteSpace(assignment)
+            var shortAssignment = AbbrevAssignmentLabel(assignment);
+            var line = string.IsNullOrWhiteSpace(shortAssignment)
                 ? string.Join(" + ", parts)
-                : $"{assignment}: " + string.Join(" + ", parts);
+                : $"{shortAssignment}: " + string.Join(" + ", parts);
             if (!string.IsNullOrWhiteSpace(line))
             {
                 result.Add(line);
@@ -221,6 +222,33 @@ public class NoteService
     {
         if (long.TryParse(s, out var v)) return v;
         return 0L;
+    }
+
+    private static string AbbrevAssignmentLabel(string assignment)
+    {
+        if (string.IsNullOrWhiteSpace(assignment)) return string.Empty;
+        var trimmed = assignment.Trim();
+        var normalized = RemoveDiacritics(trimmed).ToLowerInvariant();
+        if (normalized == "sin asignacion") return "SA";
+        if (normalized == "sin stock") return "SS";
+        if (trimmed.Length <= 3) return trimmed;
+        return trimmed.Substring(0, 3);
+    }
+
+    private static string RemoveDiacritics(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        var formD = text.Normalize(System.Text.NormalizationForm.FormD);
+        var sb = new System.Text.StringBuilder(formD.Length);
+        foreach (var ch in formD)
+        {
+            var uc = System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch);
+            if (uc != System.Globalization.UnicodeCategory.NonSpacingMark)
+            {
+                sb.Append(ch);
+            }
+        }
+        return sb.ToString().Normalize(System.Text.NormalizationForm.FormC);
     }
 }
 

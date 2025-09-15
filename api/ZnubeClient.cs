@@ -101,7 +101,19 @@ public class ZnubeClient
                     }
                     else if (!string.IsNullOrWhiteSpace(lookup.ControlledErrorMessage))
                     {
-                        label = $"ERROR: {lookup.ControlledErrorMessage}";
+                        // Diferenciar entre SKU inexistente y sin stock
+                        if (lookup.SkuNotFound)
+                        {
+                            label = "Sin asignación";
+                        }
+                        else if (lookup.NoStockForSku || lookup.SkuFound)
+                        {
+                            label = "Sin stock";
+                        }
+                        else
+                        {
+                            label = $"ERROR: {lookup.ControlledErrorMessage}";
+                        }
                     }
                 }
                 else if (!string.IsNullOrWhiteSpace(lookup.Assignment))
@@ -111,7 +123,18 @@ public class ZnubeClient
                 }
                 else if (!string.IsNullOrWhiteSpace(lookup.ControlledErrorMessage))
                 {
-                    label = $"ERROR: {lookup.ControlledErrorMessage}";
+                    if (lookup.SkuNotFound)
+                    {
+                        label = "Sin asignación";
+                    }
+                    else if (lookup.NoStockForSku || lookup.SkuFound)
+                    {
+                        label = "Sin stock";
+                    }
+                    else
+                    {
+                        label = $"ERROR: {lookup.ControlledErrorMessage}";
+                    }
                 }
             }
             var titleToShow = !string.IsNullOrWhiteSpace(lookup?.TitleFromZnube)
@@ -216,10 +239,31 @@ public class ZnubeClient
 
             if (remaining > 0)
             {
-                // Fallback: si existe asignación simple, usarla; de lo contrario, marcar "Sin asignación"
-                string assignment = !string.IsNullOrWhiteSpace(lookup?.Assignment)
-                    ? lookup!.Assignment!
-                    : "Sin asignación";
+                // Fallback: distinguir sin asignación (SKU no existe) vs sin stock (SKU existe)
+                string assignment;
+                if (lookup != null)
+                {
+                    if (lookup.SkuNotFound)
+                    {
+                        assignment = "Sin asignación";
+                    }
+                    else if (lookup.NoStockForSku || lookup.SkuFound)
+                    {
+                        assignment = "Sin stock";
+                    }
+                    else if (!string.IsNullOrWhiteSpace(lookup.Assignment))
+                    {
+                        assignment = lookup.Assignment!;
+                    }
+                    else
+                    {
+                        assignment = "Sin asignación";
+                    }
+                }
+                else
+                {
+                    assignment = "Sin asignación";
+                }
                 allocations.Add(new AllocationEntry
                 {
                     ProductLabel = productLabel,
@@ -238,6 +282,9 @@ public class ZnubeClient
         public string? ControlledErrorMessage { get; set; }
         public string? TitleFromZnube { get; set; }
         public List<ResourceSkuStock> ResourceStocks { get; set; } = new List<ResourceSkuStock>();
+        public bool SkuNotFound { get; set; }
+        public bool NoStockForSku { get; set; }
+        public bool SkuFound { get; set; }
     }
 
     private sealed class ResourceSkuStock
@@ -286,7 +333,7 @@ public class ZnubeClient
         using var res = await client.SendAsync(req);
         if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
-            return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe" };
+            return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe", SkuNotFound = true };
         }
         if (!res.IsSuccessStatusCode)
         {
@@ -297,7 +344,7 @@ public class ZnubeClient
         var dto = JsonSerializer.Deserialize<OmnichannelResponse>(body);
         if (dto?.Data == null || dto?.Data.TotalSku == 0)
         {
-            return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe" };
+            return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe", SkuNotFound = true };
         }
 
         var resources = BuildResourcesMap(dto!.Data);
@@ -348,12 +395,12 @@ public class ZnubeClient
         var assignment = ResolveAssignmentFromSku(resources, skuResourceIdsWithQty);
         if (!string.IsNullOrWhiteSpace(assignment))
         {
-            return new AssignmentLookup { Assignment = assignment, TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
+            return new AssignmentLookup { Assignment = assignment, TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks, SkuFound = true };
         }
 
         if (!skuPresent)
         {
-            return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe", TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
+            return new AssignmentLookup { ControlledErrorMessage = $"SKU {normalizedSku} no existe", TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks, SkuNotFound = true };
         }
 
         // Si hay ambigüedad, reintentar por productId
@@ -363,17 +410,17 @@ public class ZnubeClient
             var byProduct = await TryGetAssignmentByProductIdAsync(productId!, skuResourceIdsWithQty);
             if (!string.IsNullOrWhiteSpace(byProduct))
             {
-                return new AssignmentLookup { Assignment = byProduct, TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
+                return new AssignmentLookup { Assignment = byProduct, TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks, SkuFound = true };
             }
         }
 
         // Si no hay stock en ningún recurso para el SKU
         if (skuResourceIdsWithQty.Count == 0)
         {
-            return new AssignmentLookup { ControlledErrorMessage = $"Sin stock para SKU {normalizedSku}", TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
+            return new AssignmentLookup { ControlledErrorMessage = $"Sin stock para SKU {normalizedSku}", TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks, NoStockForSku = true, SkuFound = true };
         }
 
-        return new AssignmentLookup { TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks };
+        return new AssignmentLookup { TitleFromZnube = titleFromZnube, ResourceStocks = resourceStocks, SkuFound = skuPresent };
     }
 
     private async Task<string?> TryGetAssignmentByProductIdAsync(string productId, HashSet<string> allowedResourceIds)
