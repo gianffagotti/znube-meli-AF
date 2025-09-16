@@ -585,7 +585,11 @@ public class ZnubeClient
             {
                 if (!string.IsNullOrWhiteSpace(vt.TypeName) && string.Equals(vt.TypeName, v.VariantType, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!string.IsNullOrWhiteSpace(v.VariantId) && vt.Names != null && vt.Names.TryGetValue(v.VariantId, out var nameVal))
+                    if (string.Equals(vt.TypeName, "TALLE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        label = v.VariantId;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(v.VariantId) && vt.Names != null && vt.Names.TryGetValue(v.VariantId, out var nameVal))
                     {
                         label = nameVal;
                     }

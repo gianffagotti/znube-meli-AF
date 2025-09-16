@@ -4,6 +4,7 @@ public class NoteService
 {
     private const int MaxNoteLength = 300;
     private const string Other24hTag = "(TOC)";
+    private const int MaxDetailedProducts = 6;
 
     private readonly MeliClient _meliClient;
     private readonly ZnubeClient _znubeClient;
@@ -174,20 +175,80 @@ public class NoteService
             group.Add(product, qty);
         }
 
-        foreach (var assignment in assignmentOrder)
+        // Calcular total de productos (distintos) en todas las asignaciones
+        var totalProducts = byAssignment.Values.Sum(g => g.ProductOrder.Count);
+
+        // Si el total es menor o igual al límite, mantener el comportamiento actual y el orden original
+        if (totalProducts <= MaxDetailedProducts)
         {
-            if (!byAssignment.TryGetValue(assignment, out var group)) continue;
-            var parts = new List<string>();
-            foreach (var p in group.ProductOrder)
+            foreach (var assignment in assignmentOrder)
             {
-                var q = group.ProductToQty[p];
-                var suffix = q > 1 ? $" x{q}" : string.Empty;
-                parts.Add(p + suffix);
+                if (!byAssignment.TryGetValue(assignment, out var group)) continue;
+                var parts = new List<string>();
+                foreach (var p in group.ProductOrder)
+                {
+                    var q = group.ProductToQty[p];
+                    var suffix = q > 1 ? $" x{q}" : string.Empty;
+                    parts.Add(p + suffix);
+                }
+                var shortAssignment = AbbrevAssignmentLabel(assignment);
+                var line = string.IsNullOrWhiteSpace(shortAssignment)
+                    ? string.Join(" + ", parts)
+                    : $"{shortAssignment}: " + string.Join(" + ", parts);
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    result.Add(line);
+                }
             }
-            var shortAssignment = AbbrevAssignmentLabel(assignment);
-            var line = string.IsNullOrWhiteSpace(shortAssignment)
-                ? string.Join(" + ", parts)
-                : $"{shortAssignment}: " + string.Join(" + ", parts);
+            return result;
+        }
+
+        // Si hay más productos que el límite, ordenar asignaciones por cantidad ascendente
+        // y resumir la de mayor cantidad como "Restante".
+        var indexedAssignments = assignmentOrder
+            .Select((name, index) => new
+            {
+                Name = name,
+                Index = index,
+                Count = byAssignment.TryGetValue(name, out var g) ? g.ProductOrder.Count : 0
+            })
+            .ToList();
+
+        var sorted = indexedAssignments
+            .OrderBy(a => a.Count)
+            .ThenBy(a => a.Index)
+            .ToList();
+
+        // La última es la de mayor cantidad (en caso de empate, estable por orden original)
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            var entry = sorted[i];
+            if (!byAssignment.TryGetValue(entry.Name, out var group)) continue;
+
+            string line;
+            var shortAssignment = AbbrevAssignmentLabel(entry.Name);
+
+            // Para la de mayor cantidad, usar "Restante"
+            if (i == sorted.Count - 1)
+            {
+                line = string.IsNullOrWhiteSpace(shortAssignment)
+                    ? "Restante"
+                    : $"{shortAssignment}: Restante";
+            }
+            else
+            {
+                var parts = new List<string>();
+                foreach (var p in group.ProductOrder)
+                {
+                    var q = group.ProductToQty[p];
+                    var suffix = q > 1 ? $" x{q}" : string.Empty;
+                    parts.Add(p + suffix);
+                }
+                line = string.IsNullOrWhiteSpace(shortAssignment)
+                    ? string.Join(" + ", parts)
+                    : $"{shortAssignment}: " + string.Join(" + ", parts);
+            }
+
             if (!string.IsNullOrWhiteSpace(line))
             {
                 result.Add(line);
