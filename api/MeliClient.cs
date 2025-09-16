@@ -454,6 +454,22 @@ public class MeliClient
                 {
                     if (r.ValueKind != JsonValueKind.Object) continue;
 
+                    // Filtrar por coincidencia exacta del nickname del comprador
+                    string? resultNick = null;
+                    if (r.TryGetProperty("buyer", out var buyerEl) && buyerEl.ValueKind == JsonValueKind.Object)
+                    {
+                        if (buyerEl.TryGetProperty("nickname", out var nickEl) && nickEl.ValueKind == JsonValueKind.String)
+                        {
+                            resultNick = nickEl.GetString();
+                        }
+                    }
+                    var targetNick = buyerNickname?.Trim();
+                    var actualNick = resultNick?.Trim();
+                    if (string.IsNullOrWhiteSpace(actualNick) || string.IsNullOrWhiteSpace(targetNick) || !string.Equals(actualNick, targetNick, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
                     string? packKey = null;
                     if (r.TryGetProperty("pack_id", out var packEl))
                     {
