@@ -88,16 +88,8 @@ public class NoteService
         }
         catch { }
 
-        // Consolidar asignaciones estructuradas de todas las órdenes
-        var globalAllocations = new List<ZnubeClient.AllocationEntry>();
-        foreach (var o in orderList)
-        {
-            var allocs = await _znubeClient.GetAllocationsForOrderAsync(o);
-            if (allocs != null && allocs.Count > 0)
-            {
-                globalAllocations.AddRange(allocs);
-            }
-        }
+        // Consolidar asignaciones estructuradas considerando stock global entre órdenes
+        var globalAllocations = await _znubeClient.GetAllocationsForOrdersAsync(orderList);
         var lines = BuildGroupedLines(globalAllocations);
         if (!string.IsNullOrWhiteSpace(zone))
         {
