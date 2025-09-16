@@ -639,7 +639,7 @@ public class ZnubeClient
     private async Task<string?> TryGetAssignmentByProductIdAsync(string productId, HashSet<string> allowedResourceIds)
     {
         var client = _httpClientFactory.CreateClient("znube");
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?productId={Uri.EscapeDataString(productId)}");
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?sku={Uri.EscapeDataString(productId)}#");
         using var res = await client.SendAsync(req);
         if (!res.IsSuccessStatusCode)
         {
