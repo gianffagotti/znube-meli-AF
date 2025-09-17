@@ -52,8 +52,8 @@ public class MeliClient
             }
         }
 
-        var envFlex = Environment.GetEnvironmentVariable("MELI_LOGISTIC_TYPE_FLEX");
-        var envFull = Environment.GetEnvironmentVariable("MELI_LOGISTIC_TYPE_FULL");
+        var envFlex = EnvVars.GetString(EnvVars.Keys.MeliLogisticTypeFlex);
+        var envFull = EnvVars.GetString(EnvVars.Keys.MeliLogisticTypeFull);
 
         bool isFull = !string.IsNullOrWhiteSpace(logisticType)
             && (
@@ -134,7 +134,8 @@ public class MeliClient
         string? idStr = null;
         string? packId = null;
         DateTimeOffset? createdUtc = null;
-        string? buyerNickname = null;
+		string? buyerNickname = null;
+		string? buyerFirstName = null;
         if (root.TryGetProperty("id", out var idEl))
         {
             if (idEl.ValueKind == JsonValueKind.Number)
@@ -218,13 +219,17 @@ public class MeliClient
             }
         }
 
-        // buyer.nickname
+		// buyer.nickname / buyer.first_name
         if (root.TryGetProperty("buyer", out var buyer) && buyer.ValueKind == JsonValueKind.Object)
         {
             if (buyer.TryGetProperty("nickname", out var nick) && nick.ValueKind == JsonValueKind.String)
             {
                 buyerNickname = nick.GetString();
             }
+			if (buyer.TryGetProperty("first_name", out var fn) && fn.ValueKind == JsonValueKind.String)
+			{
+				buyerFirstName = fn.GetString();
+			}
         }
 
         string? shippingId = null;
@@ -247,7 +252,8 @@ public class MeliClient
             Id = idStr,
             PackId = packId,
             DateCreatedUtc = createdUtc,
-            BuyerNickname = buyerNickname
+			BuyerNickname = buyerNickname,
+			BuyerFirstName = buyerFirstName
         };
     }
 
@@ -314,11 +320,11 @@ public class MeliClient
 
     
 
-    public async Task UpsertOrderNoteAsync(string orderId, string noteText, string accessToken)
+    public async Task<bool> UpsertOrderNoteAsync(string orderId, string noteText, string accessToken)
     {
         if (string.IsNullOrWhiteSpace(orderId) || string.IsNullOrWhiteSpace(noteText))
         {
-            return;
+            return false;
         }
 
         // Evitar redundancia si ya existe alguna nota automática
@@ -327,7 +333,7 @@ public class MeliClient
             var existingNotes = await GetOrderNotesAsync(orderId, accessToken);
             if (NoteUtils.ContainsAutoNote(existingNotes))
             {
-                return;
+                return false; 
             }
         }
         catch
@@ -342,10 +348,8 @@ public class MeliClient
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         req.Content = new StringContent(JsonSerializer.Serialize(new { note = finalNote }), System.Text.Encoding.UTF8, "application/json");
         using var res = await client.SendAsync(req);
-        if (!res.IsSuccessStatusCode)
-        {
-            // Permitir que el caller decida cómo manejar el fallo sin loguear aquí
-        }
+
+        return res.IsSuccessStatusCode;
     }
 
     public async Task<bool> HasAutoNoteAsync(string orderId, string accessToken)
@@ -519,6 +523,24 @@ public class MeliClient
             return false;
         }
     }
+
+    public async Task<(bool Success, string? ResponseBody, int StatusCode)> SendActionGuideMessageAsync(string packIdOrOrderId, string text, string accessToken)
+    {
+        if (string.IsNullOrWhiteSpace(packIdOrOrderId) || string.IsNullOrWhiteSpace(text))
+        {
+            return (false, "packIdOrOrderId o texto inválido", 400);
+        }
+
+        var client = _httpClientFactory.CreateClient("meli");
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"messages/action_guide/packs/{Uri.EscapeDataString(packIdOrOrderId)}/option");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        var body = new { option_id = "OTHER", text = text };
+        req.Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
+
+        using var res = await client.SendAsync(req);
+        var content = await res.Content.ReadAsStringAsync();
+        return ((int)res.StatusCode >= 200 && (int)res.StatusCode < 300, content, (int)res.StatusCode);
+    }
 }
 
 public class MeliOrder
@@ -528,7 +550,8 @@ public class MeliOrder
     public string? Id { get; set; }
     public string? PackId { get; set; }
     public DateTimeOffset? DateCreatedUtc { get; set; }
-    public string? BuyerNickname { get; set; }
+	public string? BuyerNickname { get; set; }
+	public string? BuyerFirstName { get; set; }
 }
 
 public class MeliOrderItem
@@ -537,5 +560,3 @@ public class MeliOrderItem
     public string? SellerSku { get; set; }
     public int Quantity { get; set; } = 1;
 }
-
-

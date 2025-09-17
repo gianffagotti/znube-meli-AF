@@ -16,9 +16,9 @@ public class MeliAuth
 
     public async Task ExchangeCodeForTokensAsync(string code)
     {
-        var clientId = Env("MELI_CLIENT_ID");
-        var clientSecret = Env("MELI_CLIENT_SECRET");
-        var redirectUri = Env("MELI_REDIRECT_URI");
+        var clientId = EnvVars.GetRequiredString(EnvVars.Keys.MeliClientId);
+        var clientSecret = EnvVars.GetRequiredString(EnvVars.Keys.MeliClientSecret);
+        var redirectUri = EnvVars.GetRequiredString(EnvVars.Keys.MeliRedirectUri);
 
         var body = new Dictionary<string, string>
         {
@@ -53,8 +53,8 @@ public class MeliAuth
             throw new InvalidOperationException("No hay tokens disponibles para refrescar.");
         }
 
-        var clientId = Env("MELI_CLIENT_ID");
-        var clientSecret = Env("MELI_CLIENT_SECRET");
+        var clientId = EnvVars.GetRequiredString(EnvVars.Keys.MeliClientId);
+        var clientSecret = EnvVars.GetRequiredString(EnvVars.Keys.MeliClientSecret);
 
         var body = new Dictionary<string, string>
         {
@@ -77,9 +77,6 @@ public class MeliAuth
         await _store.WriteAsync(newAccess, DateTimeOffset.UtcNow.AddSeconds(expiresIn - 60), newRefresh!);
         return newAccess!;
     }
-
-    private static string Env(string key) =>
-        Environment.GetEnvironmentVariable(key) ?? throw new InvalidOperationException($"Missing {key}");
 }
 
 

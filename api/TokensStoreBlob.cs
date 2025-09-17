@@ -9,10 +9,9 @@ public class TokensStoreBlob
 
     public TokensStoreBlob()
     {
-        var connectionString = Environment.GetEnvironmentVariable("AZURE_STORAGE_CONNECTION_STRING")
-                  ?? throw new InvalidOperationException("Missing AZURE_STORAGE_CONNECTION_STRING");
-        var container = Environment.GetEnvironmentVariable("TOKENS_CONTAINER") ?? "secrets";
-        var name = Environment.GetEnvironmentVariable("TOKENS_BLOB_NAME") ?? "meli-tokens.json";
+        var connectionString = EnvVars.GetRequiredString(EnvVars.Keys.AzureStorageConnectionString);
+        var container = EnvVars.GetString(EnvVars.Keys.TokensContainer, "secrets");
+        var name = EnvVars.GetString(EnvVars.Keys.TokensBlobName, "meli-tokens.json");
 
         var containerClient = new BlobContainerClient(connectionString, container);
         containerClient.CreateIfNotExists();

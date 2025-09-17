@@ -1,5 +1,3 @@
-using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -14,137 +12,6 @@ public class ZnubeClient
         _httpClientFactory = httpClientFactory;
     }
 
-    public async Task<IEnumerable<string>> GetAssignmentsForOrderAsync(MeliOrder order)
-    {
-        var results = new List<string>();
-        if (order == null || order.Items == null || order.Items.Count == 0)
-        {
-            return results;
-        }
-
-        // Deduplicar SKUs y resolver en paralelo para acelerar respuesta
-        var skuSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var it in order.Items)
-        {
-            if (!string.IsNullOrWhiteSpace(it.SellerSku))
-            {
-                skuSet.Add(it.SellerSku!.Trim());
-            }
-        }
-
-        var lookupTasks = new Dictionary<string, Task<AssignmentLookup>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var sku in skuSet)
-        {
-            lookupTasks[sku] = TryGetAssignmentBySkuAsync(sku);
-        }
-
-        // Esperar todas las consultas de SKU en paralelo
-        await Task.WhenAll(lookupTasks.Values);
-
-        var lookupBySku = new Dictionary<string, AssignmentLookup>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kvp in lookupTasks)
-        {
-            // Si alguna falla por excepción, devolvemos un objeto con error controlado genérico
-            AssignmentLookup value;
-            try
-            {
-                value = kvp.Value.Result;
-            }
-            catch (Exception ex)
-            {
-                value = new AssignmentLookup { ControlledErrorMessage = $"Fallo consulta SKU {kvp.Key}: {ex.Message}" };
-            }
-            lookupBySku[kvp.Key] = value;
-        }
-
-        // Componer resultados por ítem manteniendo el orden original
-        foreach (var item in order.Items)
-        {
-            string label = "Sin asignación";
-            AssignmentLookup? lookup = null;
-            if (!string.IsNullOrWhiteSpace(item.SellerSku) && lookupBySku.TryGetValue(item.SellerSku!, out var lkp))
-            {
-                lookup = lkp;
-                // Construir asignación teniendo en cuenta cantidades parciales por recurso
-                if (lookup.ResourceStocks != null && lookup.ResourceStocks.Count > 0 && item.Quantity > 0)
-                {
-                    int remaining = item.Quantity;
-                    var segments = new List<(string ResourceName, int Qty)>();
-
-                    // Priorizar Depósito primero, luego el resto por cantidad descendente
-                    var ordered = lookup.ResourceStocks
-                        .OrderByDescending(rs => IsDepositoName(rs.ResourceName))
-                        .ThenByDescending(rs => rs.QuantityForSku)
-                        .ToList();
-
-                    foreach (var rs in ordered)
-                    {
-                        if (remaining <= 0) break;
-                        var available = rs.QuantityForSku > 0 ? (int)Math.Floor(rs.QuantityForSku) : 0;
-                        if (available <= 0) continue;
-                        var take = Math.Min(remaining, available);
-                        if (take > 0)
-                        {
-                            segments.Add((rs.ResourceName, take));
-                            remaining -= take;
-                        }
-                    }
-
-                    if (segments.Count > 0)
-                    {
-                        label = string.Join(" + ", segments.Select(s => $"{s.ResourceName} x{s.Qty}"));
-                        if (remaining > 0)
-                        {
-                            // Indicar remanente sin stock asignable
-                            label += $" + Sin stock x{remaining}";
-                        }
-                    }
-                    else if (!string.IsNullOrWhiteSpace(lookup.ControlledErrorMessage))
-                    {
-                        // Diferenciar entre SKU inexistente y sin stock
-                        if (lookup.SkuNotFound)
-                        {
-                            label = "Sin asignación";
-                        }
-                        else if (lookup.NoStockForSku || lookup.SkuFound)
-                        {
-                            label = "Sin stock";
-                        }
-                        else
-                        {
-                            label = $"ERROR: {lookup.ControlledErrorMessage}";
-                        }
-                    }
-                }
-                else if (!string.IsNullOrWhiteSpace(lookup.Assignment))
-                {
-                    // Fallback heredado si no hay detalle por recurso
-                    label = lookup.Assignment!;
-                }
-                else if (!string.IsNullOrWhiteSpace(lookup.ControlledErrorMessage))
-                {
-                    if (lookup.SkuNotFound)
-                    {
-                        label = "Sin asignación";
-                    }
-                    else if (lookup.NoStockForSku || lookup.SkuFound)
-                    {
-                        label = "Sin stock";
-                    }
-                    else
-                    {
-                        label = $"ERROR: {lookup.ControlledErrorMessage}";
-                    }
-                }
-            }
-            var titleToShow = !string.IsNullOrWhiteSpace(lookup?.TitleFromZnube)
-                ? lookup!.TitleFromZnube!
-                : item.Title;
-            results.Add($"{titleToShow} → {label}");
-        }
-
-        return results;
-    }
 
     public sealed class AllocationEntry
     {
@@ -829,30 +696,8 @@ public class ZnubeClient
     private static bool IsDepositoName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
-        var normalized = RemoveDiacritics(name).Trim().ToLowerInvariant();
+        var normalized = NoteUtils.RemoveDiacritics(name).Trim().ToLowerInvariant();
         return normalized == "deposito";
-    }
-
-    private static string RemoveDiacritics(string text)
-    {
-        var formD = text.Normalize(NormalizationForm.FormD);
-        var sb = new System.Text.StringBuilder(formD.Length);
-        foreach (var ch in formD)
-        {
-            var uc = CharUnicodeInfo.GetUnicodeCategory(ch);
-            if (uc != UnicodeCategory.NonSpacingMark)
-            {
-                sb.Append(ch);
-            }
-        }
-        return sb.ToString().Normalize(NormalizationForm.FormC);
-    }
-
-    private static double TryGetDouble(JsonElement el)
-    {
-        if (el.ValueKind == JsonValueKind.Number && el.TryGetDouble(out var d)) return d;
-        if (el.ValueKind == JsonValueKind.String && double.TryParse(el.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var ds)) return ds;
-        return 0.0;
     }
 }
 

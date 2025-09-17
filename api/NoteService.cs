@@ -4,7 +4,7 @@ public class NoteService
 {
     private const int MaxNoteLength = 300;
     private const string Other24hTag = "(TOC)";
-    private const int MaxDetailedProducts = 6;
+    private const int MaxDetailedProducts = 9;
 
     private readonly MeliClient _meliClient;
     private readonly ZnubeClient _znubeClient;
@@ -45,7 +45,7 @@ public class NoteService
         // Chequeo 24h: ¿el comprador hizo otra compra en las últimas 24 horas?
         try
         {
-            var sellerId = Environment.GetEnvironmentVariable("MELI_SELLER_ID");
+            var sellerId = EnvVars.GetString(EnvVars.Keys.MeliSellerId);
             if (!string.IsNullOrWhiteSpace(sellerId)
                 && order.DateCreatedUtc.HasValue
                 && !string.IsNullOrWhiteSpace(order.BuyerNickname))
@@ -72,7 +72,7 @@ public class NoteService
         // Última orden por fecha o id
         var last = orderList
             .OrderBy(o => o.DateCreatedUtc ?? DateTimeOffset.MinValue)
-            .ThenBy(o => TryParseLong(o.Id))
+            .ThenBy(o => NoteUtils.TryParseLong(o.Id))
             .Last();
 
         // Reglas de envío aplicadas a última orden
@@ -99,7 +99,7 @@ public class NoteService
         // Chequeo 24h para packs, usando la última orden como referencia
         try
         {
-            var sellerId = Environment.GetEnvironmentVariable("MELI_SELLER_ID");
+            var sellerId = EnvVars.GetString(EnvVars.Keys.MeliSellerId);
             if (!string.IsNullOrWhiteSpace(sellerId)
                 && last.DateCreatedUtc.HasValue
                 && !string.IsNullOrWhiteSpace(last.BuyerNickname))
@@ -218,7 +218,7 @@ public class NoteService
             if (!byAssignment.TryGetValue(entry.Name, out var group)) continue;
 
             string line;
-            var shortAssignment = AbbrevAssignmentLabel(entry.Name);
+                var shortAssignment = AbbrevAssignmentLabel(entry.Name);
 
             // Para la de mayor cantidad, usar "Restante"
             if (i == sorted.Count - 1)
@@ -271,37 +271,15 @@ public class NoteService
         }
     }
 
-    private static long TryParseLong(string? s)
-    {
-        if (long.TryParse(s, out var v)) return v;
-        return 0L;
-    }
-
     private static string AbbrevAssignmentLabel(string assignment)
     {
         if (string.IsNullOrWhiteSpace(assignment)) return string.Empty;
         var trimmed = assignment.Trim();
-        var normalized = RemoveDiacritics(trimmed).ToLowerInvariant();
+        var normalized = NoteUtils.RemoveDiacritics(trimmed).ToLowerInvariant();
         if (normalized == "sin asignacion") return "SA";
         if (normalized == "sin stock") return "SS";
         if (trimmed.Length <= 3) return trimmed;
         return trimmed.Substring(0, 3);
-    }
-
-    private static string RemoveDiacritics(string text)
-    {
-        if (string.IsNullOrEmpty(text)) return string.Empty;
-        var formD = text.Normalize(System.Text.NormalizationForm.FormD);
-        var sb = new System.Text.StringBuilder(formD.Length);
-        foreach (var ch in formD)
-        {
-            var uc = System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch);
-            if (uc != System.Globalization.UnicodeCategory.NonSpacingMark)
-            {
-                sb.Append(ch);
-            }
-        }
-        return sb.ToString().Normalize(System.Text.NormalizationForm.FormC);
     }
 }
 
