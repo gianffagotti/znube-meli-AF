@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using System;
 
 namespace meli_znube_integration.Api;
 
@@ -9,6 +10,9 @@ public class PackProcessor
     private readonly NoteService _noteService;
     private readonly PackLockStoreBlob _lockStore;
     private readonly ILogger<PackProcessor> _logger;
+
+    private static readonly bool SendBuyerMessageEnabled = EnvVars.GetBool(EnvVars.Keys.SendBuyerMessage, true);
+    private static readonly bool UpsertOrderNoteEnabled = EnvVars.GetBool(EnvVars.Keys.UpsertOrderNote, true);
 
     public PackProcessor(MeliAuth auth, MeliClient meli, NoteService noteService, PackLockStoreBlob lockStore, ILogger<PackProcessor> logger)
     {
@@ -43,7 +47,27 @@ public class PackProcessor
                 return (orderIdFromWebhook, null);
             }
             var final = _noteService.BuildFinalNote(body);
-            await _meli.UpsertOrderNoteAsync(orderIdFromWebhook, final, accessToken);
+            var upserted = false;
+            if (UpsertOrderNoteEnabled)
+            {
+                upserted = await _meli.UpsertOrderNoteAsync(orderIdFromWebhook, final, accessToken);
+            }
+            try
+            {
+                if (upserted)
+                {
+                    if (SendBuyerMessageEnabled)
+                    {
+                        var buyerNameUpper = BuildBuyerNameUpper(new[] { order });
+                        var text = BuildActionGuideMessage(buyerNameUpper);
+                        await _meli.SendActionGuideMessageAsync(orderIdFromWebhook, text, accessToken);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para order {PackId}", orderIdFromWebhook);
+            }
             return (orderIdFromWebhook, final);
         }
 
@@ -66,7 +90,7 @@ public class PackProcessor
 
             var last = orders
                 .OrderBy(o => o.DateCreatedUtc ?? DateTimeOffset.MinValue)
-                .ThenBy(o => TryParseLong(o.Id))
+                .ThenBy(o => NoteUtils.TryParseLong(o.Id))
                 .Last();
 
             var body = await _noteService.BuildConsolidatedBodyAsync(orders, accessToken);
@@ -78,7 +102,28 @@ public class PackProcessor
 
             if (!string.IsNullOrWhiteSpace(last.Id))
             {
-                await _meli.UpsertOrderNoteAsync(last.Id!, final, accessToken);
+                var upserted = false;
+                if (UpsertOrderNoteEnabled)
+                {
+                    upserted = await _meli.UpsertOrderNoteAsync(last.Id!, final, accessToken);
+                }
+                try
+                {
+                    if (upserted)
+                    {
+                        if (SendBuyerMessageEnabled)
+                        {
+                            var buyerNameUpper = BuildBuyerNameUpper(orders);
+                            var text = BuildActionGuideMessage(buyerNameUpper);
+                            await _meli.SendActionGuideMessageAsync(packId, text, accessToken);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para pack {PackId}", packId);
+                }
+
                 return (last.Id, final);
             }
             return (null, null);
@@ -89,11 +134,24 @@ public class PackProcessor
         }
     }
 
-    private static long TryParseLong(string? s)
+    private static string BuildBuyerNameUpper(IEnumerable<MeliOrder> orders)
     {
-        if (long.TryParse(s, out var v)) return v;
-        return 0L;
+        var name = orders.Select(o => o.BuyerFirstName).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))
+                   ?? orders.Select(o => o.BuyerNickname).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))
+                   ?? string.Empty;
+        return name.Trim().ToUpperInvariant();
     }
+
+    private static string BuildActionGuideMessage(string buyerNameUpper)
+    {
+        return "\uD83D\uDC9C ¡Hola, " + buyerNameUpper + "! Gracias por tu compra \uD83D\uDECD\uFE0F\n" +
+               "¿Querés aprovechar el envío y sumar otro producto?\n" +
+               "Tenemos opciones para mujer, maternal, hombre y niños,\n" +
+               "¡y 3 cuotas sin interés!\n" +
+               "✨ Encontranos como Victoria Garrido lencerías.\uD83D\uDC9C";
+    }
+
+    
 }
 
 

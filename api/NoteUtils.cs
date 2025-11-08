@@ -1,6 +1,5 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.Globalization;
+using System.Text;
 
 namespace meli_znube_integration.Api;
 
@@ -31,6 +30,28 @@ public static class NoteUtils
                 : body.Insert(AutoTag.Length, " ");
         }
         return AutoTag + " " + body;
+    }
+
+    public static long TryParseLong(string? s)
+    {
+        if (long.TryParse(s, out var v)) return v;
+        return 0L;
+    }
+
+    public static string RemoveDiacritics(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        var formD = text.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(formD.Length);
+        foreach (var ch in formD)
+        {
+            var uc = CharUnicodeInfo.GetUnicodeCategory(ch);
+            if (uc != UnicodeCategory.NonSpacingMark)
+            {
+                sb.Append(ch);
+            }
+        }
+        return sb.ToString().Normalize(NormalizationForm.FormC);
     }
 }
 

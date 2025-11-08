@@ -17,9 +17,8 @@ public class PackLockStoreBlob
 
     public PackLockStoreBlob()
     {
-        var connectionString = Environment.GetEnvironmentVariable("AZURE_STORAGE_CONNECTION_STRING")
-            ?? throw new InvalidOperationException("Missing AZURE_STORAGE_CONNECTION_STRING");
-        var container = Environment.GetEnvironmentVariable("LOCKS_CONTAINER") ?? "packs";
+        var connectionString = EnvVars.GetRequiredString(EnvVars.Keys.AzureStorageConnectionString);
+        var container = EnvVars.GetString(EnvVars.Keys.LocksContainer, "packs");
         _container = new BlobContainerClient(connectionString, container);
         _container.CreateIfNotExists();
     }
