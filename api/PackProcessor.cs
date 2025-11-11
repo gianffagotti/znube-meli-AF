@@ -89,8 +89,8 @@ public class PackProcessor
             }
 
             var last = orders
-                .OrderBy(o => o.DateCreatedUtc ?? DateTimeOffset.MinValue)
-                .ThenBy(o => NoteUtils.TryParseLong(o.Id))
+                //.OrderBy(o => o.DateCreatedUtc ?? DateTimeOffset.MinValue)
+                //.ThenBy(o => NoteUtils.TryParseLong(o.Id))
                 .Last();
 
             var body = await _noteService.BuildConsolidatedBodyAsync(orders, accessToken);
