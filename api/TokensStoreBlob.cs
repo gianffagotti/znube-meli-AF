@@ -16,8 +16,8 @@ public class TokensStoreBlob
     public TokensStoreBlob()
     {
         var connectionString = EnvVars.GetRequiredString(EnvVars.Keys.AzureStorageConnectionString);
-        var container = EnvVars.GetString(EnvVars.Keys.TokensContainer, "secrets");
-        var name = EnvVars.GetString(EnvVars.Keys.TokensBlobName, "meli-tokens.json");
+        var container = EnvVars.GetString(EnvVars.Keys.TokensContainer, "tokens");
+        var name = EnvVars.GetString(EnvVars.Keys.TokensBlobName, "tokens.json");
 
         var containerClient = new BlobContainerClient(connectionString, container);
         containerClient.CreateIfNotExists();

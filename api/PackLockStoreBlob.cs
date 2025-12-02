@@ -25,7 +25,7 @@ public class PackLockStoreBlob
 
     public async Task<(bool Acquired, BlobClient Blob)> TryAcquireAsync(string packId)
     {
-        var blob = _container.GetBlobClient($"packs/{packId}.lock");
+        var blob = _container.GetBlobClient($"{packId}.lock");
         try
         {
             var content = new BinaryData(Encoding.UTF8.GetBytes(DateTimeOffset.UtcNow.ToString("o")));

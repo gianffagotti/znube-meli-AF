@@ -6,6 +6,9 @@ public static class EnvVars
 {
     public static class Keys
     {
+        public const string MeliBaseUrl = "MELI_BASE_URL";
+        public const string ZnubeBaseUrl = "ZNUBE_BASE_URL";
+
         public const string MeliClientId = "MELI_CLIENT_ID";
         public const string MeliClientSecret = "MELI_CLIENT_SECRET";
         public const string MeliRedirectUri = "MELI_REDIRECT_URI";

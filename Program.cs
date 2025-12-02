@@ -8,13 +8,13 @@ var host = Host.CreateDefaultBuilder(args)
     {
         services.AddHttpClient("meli", c =>
         {
-            c.BaseAddress = new Uri("https://api.mercadolibre.com/");
+            c.BaseAddress = new Uri(context.Configuration[EnvVars.Keys.MeliBaseUrl]!);
             c.Timeout = TimeSpan.FromSeconds(45);
         });
 
         services.AddHttpClient("znube", c =>
         {
-            var baseUrl = context.Configuration["Znube:BaseUrl"];
+            var baseUrl = context.Configuration[EnvVars.Keys.ZnubeBaseUrl];
             if (!string.IsNullOrWhiteSpace(baseUrl))
             {
                 c.BaseAddress = new Uri(baseUrl);
