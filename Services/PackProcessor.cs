@@ -1,7 +1,12 @@
 using Microsoft.Extensions.Logging;
 using System;
 
-namespace meli_znube_integration.Api;
+namespace meli_znube_integration.Services;
+
+using meli_znube_integration.Clients;
+using meli_znube_integration.Infrastructure;
+using meli_znube_integration.Common;
+using meli_znube_integration.Models;
 
 public class PackProcessor
 {

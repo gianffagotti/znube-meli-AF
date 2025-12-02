@@ -1,6 +1,6 @@
 using System;
 
-namespace meli_znube_integration.Api;
+namespace meli_znube_integration.Common;
 
 public static class EnvVars
 {

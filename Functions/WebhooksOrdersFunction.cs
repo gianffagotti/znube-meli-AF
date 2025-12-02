@@ -1,4 +1,4 @@
-using meli_znube_integration.Api;
+using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
@@ -6,7 +6,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 
-namespace meli_znube_integration;
+namespace meli_znube_integration.Functions;
 
 public class WebhooksOrdersFunction
 {

@@ -1,7 +1,9 @@
 using Azure.Storage.Blobs;
 using System.Text.Json;
 
-namespace meli_znube_integration.Api;
+namespace meli_znube_integration.Infrastructure;
+
+using meli_znube_integration.Common;
 
 public class TokensStoreBlob
 {

@@ -2,7 +2,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace meli_znube_integration.Api;
+namespace meli_znube_integration.Infrastructure;
 
 public class ZnubeTokenHandler : DelegatingHandler
 {

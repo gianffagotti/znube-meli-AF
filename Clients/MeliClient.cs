@@ -1,7 +1,9 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 
-namespace meli_znube_integration.Api;
+namespace meli_znube_integration.Clients;
+
+using meli_znube_integration.Common;
 
 public class MeliClient
 {

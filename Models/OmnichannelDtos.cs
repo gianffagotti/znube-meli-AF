@@ -1,4 +1,4 @@
-namespace meli_znube_integration.Api;
+namespace meli_znube_integration.Models;
 
 public class OmnichannelResponse
 {

@@ -1,4 +1,7 @@
-using meli_znube_integration.Api;
+using meli_znube_integration.Services;
+using meli_znube_integration.Clients;
+using meli_znube_integration.Infrastructure;
+using meli_znube_integration.Common;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 

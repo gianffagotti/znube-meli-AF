@@ -3,7 +3,9 @@ using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using System.Text;
 
-namespace meli_znube_integration.Api;
+namespace meli_znube_integration.Infrastructure;
+
+using meli_znube_integration.Common;
 
 // Usa Azure Blob Storage como sistema de locking por pack.
 // - Contenedor configurable vía env `LOCKS_CONTAINER` (default: "packs").

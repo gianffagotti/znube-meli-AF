@@ -1,4 +1,8 @@
-namespace meli_znube_integration.Api;
+namespace meli_znube_integration.Services;
+
+using meli_znube_integration.Clients;
+using meli_znube_integration.Models;
+using meli_znube_integration.Common;
 
 public class NoteService
 {
