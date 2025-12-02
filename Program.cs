@@ -20,12 +20,8 @@ var host = Host.CreateDefaultBuilder(args)
                 c.BaseAddress = new Uri(baseUrl);
             }
             c.Timeout = TimeSpan.FromSeconds(45);
-            var token = context.Configuration["Znube:Token"];
-            if (!string.IsNullOrWhiteSpace(token))
-            {
-                c.DefaultRequestHeaders.TryAddWithoutValidation("zNube-token", token);
-            }
-        });
+        })
+        .AddHttpMessageHandler<ZnubeTokenHandler>();
 
         services.AddSingleton<TokensStoreBlob>();
         services.AddSingleton<MeliAuth>();
@@ -34,6 +30,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddScoped<NoteService>();
         services.AddSingleton<PackLockStoreBlob>();
         services.AddScoped<PackProcessor>();
+        services.AddTransient<ZnubeTokenHandler>();
     })
     .Build();
 
