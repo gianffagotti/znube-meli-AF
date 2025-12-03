@@ -1,9 +1,7 @@
-using System.Net.Http.Headers;
+using meli_znube_integration.Common;
 using System.Text.Json;
 
 namespace meli_znube_integration.Clients;
-
-using meli_znube_integration.Common;
 
 public class MeliClient
 {
@@ -22,7 +20,7 @@ public class MeliClient
         public string? Zone { get; set; }
     }
 
-    public async Task<MeliShipmentInfo?> GetShipmentInfoAsync(MeliOrder order, string accessToken)
+    public async Task<MeliShipmentInfo?> GetShipmentInfoAsync(MeliOrder order)
     {
         if (order == null || string.IsNullOrWhiteSpace(order.ShippingId))
         {
@@ -31,7 +29,6 @@ public class MeliClient
 
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Get, $"shipments/{order.ShippingId}");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         req.Headers.TryAddWithoutValidation("x-format-new", "true");
 
         using var res = await client.SendAsync(req);
@@ -112,11 +109,10 @@ public class MeliClient
             Zone = zone
         };
     }
-    public async Task<MeliOrder?> GetOrderAsync(string orderId, string accessToken)
+    public async Task<MeliOrder?> GetOrderAsync(string orderId)
     {
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Get, $"orders/{orderId}");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
         using var res = await client.SendAsync(req);
         if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -259,11 +255,10 @@ public class MeliClient
         };
     }
 
-    public async Task<List<MeliOrder>> GetOrdersByPackAsync(string packId, string accessToken)
+    public async Task<List<MeliOrder>> GetOrdersByPackAsync(string packId)
     {
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Get, $"packs/{Uri.EscapeDataString(packId)}");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
         using var res = await client.SendAsync(req);
         if (!res.IsSuccessStatusCode)
@@ -313,7 +308,7 @@ public class MeliClient
         }
 
         // Recuperar cada orden con detalles para poder construir asignaciones
-        var tasks = orderIds.Select(id => GetOrderAsync(id, accessToken)).ToArray();
+        var tasks = orderIds.Select(id => GetOrderAsync(id)).ToArray();
         var orders = await Task.WhenAll(tasks);
         return orders.Where(o => o != null).Select(o => o!).ToList();
     }
@@ -322,7 +317,7 @@ public class MeliClient
 
     
 
-    public async Task<bool> UpsertOrderNoteAsync(string orderId, string noteText, string accessToken)
+    public async Task<bool> UpsertOrderNoteAsync(string orderId, string noteText)
     {
         if (string.IsNullOrWhiteSpace(orderId) || string.IsNullOrWhiteSpace(noteText))
         {
@@ -332,7 +327,7 @@ public class MeliClient
         // Evitar redundancia si ya existe alguna nota automática
         try
         {
-            var existingNotes = await GetOrderNotesAsync(orderId, accessToken);
+            var existingNotes = await GetOrderNotesAsync(orderId);
             if (NoteUtils.ContainsAutoNote(existingNotes))
             {
                 return false; 
@@ -347,18 +342,17 @@ public class MeliClient
 
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Post, $"orders/{orderId}/notes");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         req.Content = new StringContent(JsonSerializer.Serialize(new { note = finalNote }), System.Text.Encoding.UTF8, "application/json");
         using var res = await client.SendAsync(req);
 
         return res.IsSuccessStatusCode;
     }
 
-    public async Task<bool> HasAutoNoteAsync(string orderId, string accessToken)
+    public async Task<bool> HasAutoNoteAsync(string orderId)
     {
         try
         {
-            var notes = await GetOrderNotesAsync(orderId, accessToken);
+            var notes = await GetOrderNotesAsync(orderId);
             return NoteUtils.ContainsAutoNote(notes);
         }
         catch
@@ -367,11 +361,10 @@ public class MeliClient
         }
     }
 
-    public async Task<List<string>> GetOrderNotesAsync(string orderId, string accessToken)
+    public async Task<List<string>> GetOrderNotesAsync(string orderId)
     {
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Get, $"orders/{orderId}/notes");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         using var res = await client.SendAsync(req);
 
         if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -415,10 +408,9 @@ public class MeliClient
         DateTimeOffset fromDate,
         DateTimeOffset toDate,
         string buyerNickname,
-        string sellerId,
-        string accessToken)
+        string sellerId)
     {
-        if (string.IsNullOrWhiteSpace(buyerNickname) || string.IsNullOrWhiteSpace(sellerId) || string.IsNullOrWhiteSpace(accessToken))
+        if (string.IsNullOrWhiteSpace(buyerNickname) || string.IsNullOrWhiteSpace(sellerId))
         {
             return false;
         }
@@ -441,7 +433,6 @@ public class MeliClient
                       + "&q=" + Uri.EscapeDataString(buyerNickname);
 
             using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
             using var res = await client.SendAsync(req);
             if (!res.IsSuccessStatusCode)
@@ -526,7 +517,7 @@ public class MeliClient
         }
     }
 
-    public async Task<(bool Success, string? ResponseBody, int StatusCode)> SendActionGuideMessageAsync(string packIdOrOrderId, string text, string accessToken)
+    public async Task<(bool Success, string? ResponseBody, int StatusCode)> SendActionGuideMessageAsync(string packIdOrOrderId, string text)
     {
         if (string.IsNullOrWhiteSpace(packIdOrOrderId) || string.IsNullOrWhiteSpace(text))
         {
@@ -535,7 +526,6 @@ public class MeliClient
 
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Post, $"messages/action_guide/packs/{Uri.EscapeDataString(packIdOrOrderId)}/option");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         var body = new { option_id = "OTHER", text = text };
         req.Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
 

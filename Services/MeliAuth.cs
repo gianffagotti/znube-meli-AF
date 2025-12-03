@@ -32,7 +32,7 @@ public class MeliAuth
             ["redirect_uri"] = redirectUri
         };
 
-        using var http = _httpClientFactory.CreateClient("meli");
+        using var http = _httpClientFactory.CreateClient("meli-auth");
         var res = await http.PostAsync("oauth/token", new FormUrlEncodedContent(body));
         res.EnsureSuccessStatusCode();
 
@@ -67,7 +67,7 @@ public class MeliAuth
             ["refresh_token"] = refresh!
         };
 
-        using var http = _httpClientFactory.CreateClient("meli");
+        using var http = _httpClientFactory.CreateClient("meli-auth");
         var res = await http.PostAsync("oauth/token", new FormUrlEncodedContent(body));
         res.EnsureSuccessStatusCode();
 

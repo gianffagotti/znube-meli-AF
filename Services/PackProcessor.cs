@@ -1,12 +1,9 @@
+using meli_znube_integration.Clients;
+using meli_znube_integration.Common;
+using meli_znube_integration.Infrastructure;
 using Microsoft.Extensions.Logging;
-using System;
 
 namespace meli_znube_integration.Services;
-
-using meli_znube_integration.Clients;
-using meli_znube_integration.Infrastructure;
-using meli_znube_integration.Common;
-using meli_znube_integration.Models;
 
 public class PackProcessor
 {
@@ -30,8 +27,7 @@ public class PackProcessor
 
     public async Task<(string? OrderIdWritten, string? NoteText)> ProcessAsync(string orderIdFromWebhook)
     {
-        var accessToken = await _auth.GetValidAccessTokenAsync();
-        var order = await _meli.GetOrderAsync(orderIdFromWebhook, accessToken);
+        var order = await _meli.GetOrderAsync(orderIdFromWebhook);
         if (order == null || order.DateCreatedUtc < DateTime.UtcNow.AddHours(-24))
         {
             return (null, null);
@@ -41,12 +37,12 @@ public class PackProcessor
         if (string.IsNullOrWhiteSpace(order.PackId))
         {
             // idempotencia: si ya hay [AUTO], cortar
-            if (await _meli.HasAutoNoteAsync(orderIdFromWebhook, accessToken))
+            if (await _meli.HasAutoNoteAsync(orderIdFromWebhook))
             {
                 return (orderIdFromWebhook, null);
             }
 
-            var body = await _noteService.BuildSingleOrderBodyAsync(order, accessToken);
+            var body = await _noteService.BuildSingleOrderBodyAsync(order);
             if (string.IsNullOrWhiteSpace(body))
             {
                 return (orderIdFromWebhook, null);
@@ -55,7 +51,7 @@ public class PackProcessor
             var upserted = false;
             if (UpsertOrderNoteEnabled)
             {
-                upserted = await _meli.UpsertOrderNoteAsync(orderIdFromWebhook, final, accessToken);
+                upserted = await _meli.UpsertOrderNoteAsync(orderIdFromWebhook, final);
             }
             try
             {
@@ -65,7 +61,7 @@ public class PackProcessor
                     {
                         var buyerNameUpper = BuildBuyerNameUpper(new[] { order });
                         var text = BuildActionGuideMessage(buyerNameUpper);
-                        await _meli.SendActionGuideMessageAsync(orderIdFromWebhook, text, accessToken);
+                        await _meli.SendActionGuideMessageAsync(orderIdFromWebhook, text);
                     }
                 }
             }
@@ -87,7 +83,7 @@ public class PackProcessor
 
         try
         {
-            var orders = await _meli.GetOrdersByPackAsync(packId, accessToken);
+            var orders = await _meli.GetOrdersByPackAsync(packId);
             if (orders.Count == 0)
             {
                 return (null, null);
@@ -96,7 +92,7 @@ public class PackProcessor
             var last = orders
                 .Last();
 
-            var body = await _noteService.BuildConsolidatedBodyAsync(orders, accessToken);
+            var body = await _noteService.BuildConsolidatedBodyAsync(orders);
             if (string.IsNullOrWhiteSpace(body))
             {
                 return (null, null);
@@ -108,7 +104,7 @@ public class PackProcessor
                 var upserted = false;
                 if (UpsertOrderNoteEnabled)
                 {
-                    upserted = await _meli.UpsertOrderNoteAsync(last.Id!, final, accessToken);
+                    upserted = await _meli.UpsertOrderNoteAsync(last.Id!, final);
                 }
                 try
                 {
@@ -118,7 +114,7 @@ public class PackProcessor
                         {
                             var buyerNameUpper = BuildBuyerNameUpper(orders);
                             var text = BuildActionGuideMessage(buyerNameUpper);
-                            await _meli.SendActionGuideMessageAsync(packId, text, accessToken);
+                            await _meli.SendActionGuideMessageAsync(packId, text);
                         }
                     }
                 }
@@ -153,8 +149,4 @@ public class PackProcessor
                "¡y 3 cuotas sin interés!\n" +
                "✨ Encontranos como Victoria Garrido lencerías.\uD83D\uDC9C";
     }
-
-    
 }
-
-

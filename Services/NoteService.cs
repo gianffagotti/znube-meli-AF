@@ -1,8 +1,7 @@
-namespace meli_znube_integration.Services;
-
 using meli_znube_integration.Clients;
-using meli_znube_integration.Models;
 using meli_znube_integration.Common;
+
+namespace meli_znube_integration.Services;
 
 public class NoteService
 {
@@ -19,12 +18,12 @@ public class NoteService
         _znubeClient = znubeClient;
     }
 
-    public async Task<string?> BuildSingleOrderBodyAsync(MeliOrder order, string accessToken)
+    public async Task<string?> BuildSingleOrderBodyAsync(MeliOrder order)
     {
         string? zone = null;
         try
         {
-            var shipment = await _meliClient.GetShipmentInfoAsync(order, accessToken);
+            var shipment = await _meliClient.GetShipmentInfoAsync(order);
             if (shipment != null)
             {
                 if (shipment.IsFull)
@@ -56,7 +55,7 @@ public class NoteService
             {
                 var to = order.DateCreatedUtc.Value;
                 var from = to.AddHours(-24);
-                var hasOther = await _meliClient.HasTwoOrMoreOrdersByBuyerAsync(from, to, order.BuyerNickname!, sellerId!, accessToken);
+                var hasOther = await _meliClient.HasTwoOrMoreOrdersByBuyerAsync(from, to, order.BuyerNickname!, sellerId!);
                 if (hasOther)
                 {
                     lines.Add(Other24hTag);
@@ -68,9 +67,9 @@ public class NoteService
         return body;
     }
 
-    public async Task<string?> BuildConsolidatedBodyAsync(IEnumerable<MeliOrder> orders, string accessToken)
+    public async Task<string?> BuildConsolidatedBodyAsync(IEnumerable<MeliOrder> orders)
     {
-        var orderList = orders?.Where(o => o != null).ToList() ?? new List<MeliOrder>();
+        var orderList = orders?.Where(o => o != null).ToList() ?? [];
         if (orderList.Count == 0) return null;
 
         // Última orden por fecha o id
@@ -83,7 +82,7 @@ public class NoteService
         string? zone = null;
         try
         {
-            var shipment = await _meliClient.GetShipmentInfoAsync(last, accessToken);
+            var shipment = await _meliClient.GetShipmentInfoAsync(last);
             if (shipment != null)
             {
                 if (shipment.IsFull) return null; // si es FULL, se omite nota
@@ -110,7 +109,7 @@ public class NoteService
             {
                 var to = last.DateCreatedUtc.Value;
                 var from = to.AddHours(-24);
-                var hasOther = await _meliClient.HasTwoOrMoreOrdersByBuyerAsync(from, to, last.BuyerNickname!, sellerId!, accessToken);
+                var hasOther = await _meliClient.HasTwoOrMoreOrdersByBuyerAsync(from, to, last.BuyerNickname!, sellerId!);
                 if (hasOther)
                 {
                     lines.Add(Other24hTag);
@@ -286,5 +285,3 @@ public class NoteService
         return trimmed.Substring(0, 3);
     }
 }
-
-

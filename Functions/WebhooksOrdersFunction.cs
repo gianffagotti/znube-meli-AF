@@ -19,7 +19,7 @@ public class WebhooksOrdersFunction
         _logger = logger;
     }
 
-    [Function("WebhooksOrdersV2")]
+    [Function("WebhooksOrders")]
     public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "webhooks/orders")] HttpRequestData req)
     {
