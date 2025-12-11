@@ -4,6 +4,8 @@ using meli_znube_integration.Infrastructure;
 using meli_znube_integration.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Polly;
+using Polly.Extensions.Http;
 
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureFunctionsWorkerDefaults()
@@ -18,9 +20,13 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddHttpClient("meli", c =>
         {
             c.BaseAddress = new Uri(context.Configuration[EnvVars.Keys.MeliBaseUrl]!);
-            c.Timeout = TimeSpan.FromSeconds(45);
+            c.Timeout = TimeSpan.FromMinutes(5);
         })
-        .AddHttpMessageHandler<MeliTokenHandler>();
+        .AddHttpMessageHandler<MeliTokenHandler>()
+        .AddPolicyHandler(Policy<HttpResponseMessage>
+            .Handle<HttpRequestException>()
+            .OrTransientHttpError()
+            .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt))));
 
         services.AddHttpClient("znube", c =>
         {

@@ -1,5 +1,6 @@
 using meli_znube_integration.Common;
 using System.Text.Json;
+using meli_znube_integration.Models;
 
 namespace meli_znube_integration.Clients;
 
@@ -264,7 +265,7 @@ public class MeliClient
         if (!res.IsSuccessStatusCode)
         {
             // Si el endpoint no está disponible, devolver lista vacía y permitir fallback por el caller
-            return new List<MeliOrder>();
+            return [];
         }
 
         var json = await res.Content.ReadAsStringAsync();
@@ -310,12 +311,8 @@ public class MeliClient
         // Recuperar cada orden con detalles para poder construir asignaciones
         var tasks = orderIds.Select(id => GetOrderAsync(id)).ToArray();
         var orders = await Task.WhenAll(tasks);
-        return orders.Where(o => o != null).Select(o => o!).ToList();
+        return [.. orders.Where(o => o != null).Select(o => o!)];
     }
-
-    
-
-    
 
     public async Task<bool> UpsertOrderNoteAsync(string orderId, string noteText)
     {
@@ -369,7 +366,7 @@ public class MeliClient
 
         if (res.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
-            return new List<string>();
+            return [];
         }
         if (!res.IsSuccessStatusCode)
         {
@@ -421,7 +418,7 @@ public class MeliClient
 
             if (fromDate > toDate)
             {
-                var tmp = fromDate; fromDate = toDate; toDate = tmp;
+                (toDate, fromDate) = (fromDate, toDate);
             }
 
             string fromParam = fromDate.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz");
@@ -533,11 +530,67 @@ public class MeliClient
         var content = await res.Content.ReadAsStringAsync();
         return ((int)res.StatusCode >= 200 && (int)res.StatusCode < 300, content, (int)res.StatusCode);
     }
+    public async Task<MeliScanResponse?> ScanItemsAsync(string userId, string? scrollId = null)
+    {
+        var client = _httpClientFactory.CreateClient("meli");
+        var url = $"users/{userId}/items/search?search_type=scan&status=active";
+        if (!string.IsNullOrWhiteSpace(scrollId))
+        {
+            url += $"&scroll_id={Uri.EscapeDataString(scrollId)}";
+        }
+
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        using var res = await client.SendAsync(req);
+        
+        if (!res.IsSuccessStatusCode) return null;
+
+        var json = await res.Content.ReadAsStringAsync();
+        return JsonSerializer.Deserialize<MeliScanResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+
+    public async Task<List<MeliItem>> GetItemsAsync(IEnumerable<string> ids)
+    {
+        var idList = ids.ToList();
+        if (idList.Count == 0) return [];
+
+        var client = _httpClientFactory.CreateClient("meli");
+        var idsParam = string.Join(",", idList);
+        var url = $"items?ids={idsParam}&include_attributes=all&attributes=id,shipping,variations,seller_custom_field,attributes,title";
+
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        using var res = await client.SendAsync(req);
+
+        if (!res.IsSuccessStatusCode) return new List<MeliItem>();
+
+        var json = await res.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var items = new List<MeliItem>();
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in root.EnumerateArray())
+            {
+                if (entry.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.Object)
+                {
+                    // Check for error in body (multiget can return errors per item)
+                    if (body.TryGetProperty("error", out _)) continue;
+
+                    var item = JsonSerializer.Deserialize<MeliItem>(body.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    if (item != null)
+                    {
+                        items.Add(item);
+                    }
+                }
+            }
+        }
+        return items;
+    }
 }
 
 public class MeliOrder
 {
-    public List<MeliOrderItem> Items { get; set; } = new List<MeliOrderItem>();
+    public List<MeliOrderItem> Items { get; set; } = [];
     public string? ShippingId { get; set; }
     public string? Id { get; set; }
     public string? PackId { get; set; }
