@@ -1,7 +1,6 @@
 using Azure.Storage.Blobs;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
-using meli_znube_integration.Models;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -52,7 +51,7 @@ public class StockSyncWorker
         {
             _logger.LogError(ex, "Error in StockSyncWorker");
         }
-        
+
         _logger.LogInformation("StockSyncWorker finished.");
     }
 
@@ -77,11 +76,12 @@ public class StockSyncWorker
                 var blobClient = containerClient.GetBlobClient(blob.Name);
                 var content = await blobClient.DownloadContentAsync();
                 var dict = JsonSerializer.Deserialize<Dictionary<string, StockMappingEntry>>(content.Value.Content.ToString(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                
+
                 if (dict != null)
                 {
                     foreach (var kvp in dict)
                     {
+                        kvp.Value.Sku = kvp.Key;
                         mappings.Add(kvp.Value);
                     }
                 }
@@ -157,7 +157,7 @@ public class StockSyncWorker
             // Determine Source Quantity
             int flexQuantity = 0;
             string sourceKey = !string.IsNullOrWhiteSpace(mapping.Flex!.VariationId) ? mapping.Flex.VariationId! : mapping.Flex.ItemId;
-            
+
             if (!sourceStock.TryGetValue(sourceKey, out flexQuantity))
             {
                 return;
@@ -176,10 +176,10 @@ public class StockSyncWorker
             if (fullQuantity == flexQuantity) return;
 
             // C. Update
-            _logger.LogInformation($"Updating SKU {mapping.Full.ItemId} (UP: {userProductId}): Flex({flexQuantity}) vs Full({fullQuantity}).");
-            
+            _logger.LogInformation($"Updating SKU {mapping.Sku} (ItemID: {mapping.Full.ItemId}, UP: {userProductId}): Flex({flexQuantity}) vs Full({fullQuantity}).");
+
             bool success = await _meliClient.UpdateUserProductStockAsync(userProductId, flexQuantity, version);
-            
+
             if (!success)
             {
                 // Retry once logic
@@ -190,15 +190,15 @@ public class StockSyncWorker
                     (fullQuantity, version) = currentStock.Value;
                     if (fullQuantity != flexQuantity)
                     {
-                         bool retrySuccess = await _meliClient.UpdateUserProductStockAsync(userProductId, flexQuantity, version);
-                         if (retrySuccess)
-                         {
-                             _logger.LogInformation($"Retry successful for {userProductId}.");
-                         }
-                         else
-                         {
-                             _logger.LogError($"Retry failed for {userProductId}.");
-                         }
+                        bool retrySuccess = await _meliClient.UpdateUserProductStockAsync(userProductId, flexQuantity, version);
+                        if (retrySuccess)
+                        {
+                            _logger.LogInformation($"Retry successful for {userProductId}.");
+                        }
+                        else
+                        {
+                            _logger.LogError($"Retry failed for {userProductId}.");
+                        }
                     }
                 }
             }
@@ -214,6 +214,7 @@ public class StockSyncWorker
     {
         public StockNode? Full { get; set; }
         public StockNode? Flex { get; set; }
+        public string Sku { get; set; } = string.Empty;
     }
 
     public class StockNode

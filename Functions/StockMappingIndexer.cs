@@ -2,7 +2,6 @@ using Azure.Storage.Blobs;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
-using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -15,14 +14,12 @@ public class StockMappingIndexer
 {
     private readonly ILogger<StockMappingIndexer> _logger;
     private readonly MeliClient _meliClient;
-    private readonly MeliAuth _meliAuth;
     private readonly IConfiguration _configuration;
 
-    public StockMappingIndexer(ILogger<StockMappingIndexer> logger, MeliClient meliClient, MeliAuth meliAuth, IConfiguration configuration)
+    public StockMappingIndexer(ILogger<StockMappingIndexer> logger, MeliClient meliClient, IConfiguration configuration)
     {
         _logger = logger;
         _meliClient = meliClient;
-        _meliAuth = meliAuth;
         _configuration = configuration;
     }
 
