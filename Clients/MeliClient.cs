@@ -79,7 +79,7 @@ public class MeliClient
                 {
                     cityNew = cityNameNew.GetString();
                 }
-                
+
                 if (!string.IsNullOrWhiteSpace(cityNew))
                 {
                     zone = cityNew;
@@ -133,8 +133,8 @@ public class MeliClient
         string? idStr = null;
         string? packId = null;
         DateTimeOffset? createdUtc = null;
-		string? buyerNickname = null;
-		string? buyerFirstName = null;
+        string? buyerNickname = null;
+        string? buyerFirstName = null;
         if (root.TryGetProperty("id", out var idEl))
         {
             if (idEl.ValueKind == JsonValueKind.Number)
@@ -218,17 +218,17 @@ public class MeliClient
             }
         }
 
-		// buyer.nickname / buyer.first_name
+        // buyer.nickname / buyer.first_name
         if (root.TryGetProperty("buyer", out var buyer) && buyer.ValueKind == JsonValueKind.Object)
         {
             if (buyer.TryGetProperty("nickname", out var nick) && nick.ValueKind == JsonValueKind.String)
             {
                 buyerNickname = nick.GetString();
             }
-			if (buyer.TryGetProperty("first_name", out var fn) && fn.ValueKind == JsonValueKind.String)
-			{
-				buyerFirstName = fn.GetString();
-			}
+            if (buyer.TryGetProperty("first_name", out var fn) && fn.ValueKind == JsonValueKind.String)
+            {
+                buyerFirstName = fn.GetString();
+            }
         }
 
         string? shippingId = null;
@@ -251,8 +251,8 @@ public class MeliClient
             Id = idStr,
             PackId = packId,
             DateCreatedUtc = createdUtc,
-			BuyerNickname = buyerNickname,
-			BuyerFirstName = buyerFirstName
+            BuyerNickname = buyerNickname,
+            BuyerFirstName = buyerFirstName
         };
     }
 
@@ -327,7 +327,7 @@ public class MeliClient
             var existingNotes = await GetOrderNotesAsync(orderId);
             if (NoteUtils.ContainsAutoNote(existingNotes))
             {
-                return false; 
+                return false;
             }
         }
         catch
@@ -541,7 +541,7 @@ public class MeliClient
 
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         using var res = await client.SendAsync(req);
-        
+
         if (!res.IsSuccessStatusCode) return null;
 
         var json = await res.Content.ReadAsStringAsync();
@@ -567,6 +567,7 @@ public class MeliClient
         var root = doc.RootElement;
 
         var items = new List<MeliItem>();
+        JsonSerializerOptions options = new() { PropertyNameCaseInsensitive = true };
         if (root.ValueKind == JsonValueKind.Array)
         {
             foreach (var entry in root.EnumerateArray())
@@ -576,7 +577,7 @@ public class MeliClient
                     // Check for error in body (multiget can return errors per item)
                     if (body.TryGetProperty("error", out _)) continue;
 
-                    var item = JsonSerializer.Deserialize<MeliItem>(body.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    var item = JsonSerializer.Deserialize<MeliItem>(body.GetRawText(), options);
                     if (item != null)
                     {
                         items.Add(item);
@@ -595,8 +596,8 @@ public class MeliOrder
     public string? Id { get; set; }
     public string? PackId { get; set; }
     public DateTimeOffset? DateCreatedUtc { get; set; }
-	public string? BuyerNickname { get; set; }
-	public string? BuyerFirstName { get; set; }
+    public string? BuyerNickname { get; set; }
+    public string? BuyerFirstName { get; set; }
 }
 
 public class MeliOrderItem

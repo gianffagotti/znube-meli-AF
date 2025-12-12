@@ -10,9 +10,6 @@ public class MeliItem
     [JsonPropertyName("user_product_id")]
     public string UserProductId { get; set; } = string.Empty;
 
-    [JsonPropertyName("title")]
-    public string Title { get; set; } = string.Empty;
-
     [JsonPropertyName("seller_custom_field")]
     public string? SellerCustomField { get; set; }
 
@@ -20,10 +17,10 @@ public class MeliItem
     public MeliShipping? Shipping { get; set; }
 
     [JsonPropertyName("attributes")]
-    public List<MeliAttribute> Attributes { get; set; } = new();
+    public List<MeliAttribute> Attributes { get; set; } = [];
 
     [JsonPropertyName("variations")]
-    public List<MeliVariation> Variations { get; set; } = new();
+    public List<MeliVariation> Variations { get; set; } = [];
 }
 
 public class MeliShipping
@@ -49,17 +46,17 @@ public class MeliVariation
     [JsonPropertyName("seller_custom_field")]
     public string? SellerCustomField { get; set; }
 
-    [JsonPropertyName("attribute_combinations")]
-    public List<MeliAttribute> AttributeCombinations { get; set; } = new();
+    [JsonPropertyName("user_product_id")]
+    public string UserProductId { get; set; } = string.Empty;
     
     [JsonPropertyName("attributes")]
-    public List<MeliAttribute> Attributes { get; set; } = new();
+    public List<MeliAttribute> Attributes { get; set; } = [];
 }
 
 public class MeliScanResponse
 {
     [JsonPropertyName("results")]
-    public List<string> Results { get; set; } = new();
+    public List<string> Results { get; set; } = [];
 
     [JsonPropertyName("scroll_id")]
     public string? ScrollId { get; set; }

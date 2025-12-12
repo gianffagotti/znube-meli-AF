@@ -29,7 +29,7 @@ public class StockMappingIndexer
     [Function("StockMappingIndexer")]
     public async Task Run([TimerTrigger("0 0 4 * * *", RunOnStartup = true)] TimerInfo myTimer)
     {
-        _logger.LogInformation("StockMappingIndexer executed at: {DateTime.Now}", DateTime.Now);
+        _logger.LogInformation("\u001b[32mStockMappingIndexer executed at: {DateTime.Now}.\u001b[0m", DateTime.Now);
 
         try
         {
@@ -129,7 +129,7 @@ public class StockMappingIndexer
 
             await PersistMappingsAsync(missingFlexMapping, "stock-mappings-missing-flex");
 
-            _logger.LogInformation("StockMappingIndexer finalizado exitosamente.");
+            _logger.LogInformation("\u001b[32mStockMappingIndexer finalizado exitosamente.\u001b[0m");
         }
         catch (Exception ex)
         {
@@ -154,7 +154,7 @@ public class StockMappingIndexer
                 var sku = ExtractSku(item, variation);
                 if (!string.IsNullOrWhiteSpace(sku))
                 {
-                    AddToMapping(mapping, sku!, item.Id, item.UserProductId, variation.Id.ToString(), logisticType!, isFull);
+                    AddToMapping(mapping, sku!, item.Id, variation.UserProductId, variation.Id.ToString(), logisticType!, isFull);
                 }
             }
         }
