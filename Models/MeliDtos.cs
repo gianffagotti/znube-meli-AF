@@ -21,6 +21,9 @@ public class MeliItem
 
     [JsonPropertyName("variations")]
     public List<MeliVariation> Variations { get; set; } = [];
+
+    [JsonPropertyName("available_quantity")]
+    public int AvailableQuantity { get; set; }
 }
 
 public class MeliShipping
@@ -51,6 +54,9 @@ public class MeliVariation
     
     [JsonPropertyName("attributes")]
     public List<MeliAttribute> Attributes { get; set; } = [];
+
+    [JsonPropertyName("available_quantity")]
+    public int AvailableQuantity { get; set; }
 }
 
 public class MeliScanResponse
@@ -60,4 +66,22 @@ public class MeliScanResponse
 
     [JsonPropertyName("scroll_id")]
     public string? ScrollId { get; set; }
+}
+
+public class MeliUserProductStockResponse
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("locations")]
+    public List<MeliStockLocation> Locations { get; set; } = [];
+}
+
+public class MeliStockLocation
+{
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = string.Empty;
+
+    [JsonPropertyName("quantity")]
+    public int Quantity { get; set; }
 }

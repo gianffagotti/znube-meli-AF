@@ -587,6 +587,49 @@ public class MeliClient
         }
         return items;
     }
+    public async Task<(int Quantity, string Version)?> GetUserProductStockAsync(string userProductId)
+    {
+        var client = _httpClientFactory.CreateClient("meli");
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"user-products/{userProductId}/stock");
+        using var res = await client.SendAsync(req);
+
+        if (!res.IsSuccessStatusCode) return null;
+
+        string version = string.Empty;
+        if (res.Headers.TryGetValues("x-version", out var values))
+        {
+            version = values.FirstOrDefault() ?? string.Empty;
+        }
+
+        var json = await res.Content.ReadAsStringAsync();
+        var stockResponse = JsonSerializer.Deserialize<MeliUserProductStockResponse>(json);
+
+        var quantity = stockResponse?.Locations
+            .FirstOrDefault(l => l.Type == "selling_address")?.Quantity ?? 0;
+
+        return (quantity, version);
+    }
+
+    public async Task<bool> UpdateUserProductStockAsync(string userProductId, int quantity, string version)
+    {
+        var client = _httpClientFactory.CreateClient("meli");
+        using var req = new HttpRequestMessage(HttpMethod.Put, $"user-products/{userProductId}/stock/type/selling_address");
+
+        req.Headers.TryAddWithoutValidation("x-version", version);
+
+        var body = new { quantity };
+        req.Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
+
+        using var res = await client.SendAsync(req);
+
+        if (res.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            return false;
+        }
+
+        res.EnsureSuccessStatusCode();
+        return true;
+    }
 }
 
 public class MeliOrder
