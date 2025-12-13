@@ -14,7 +14,6 @@ public class StockSyncWorker
     private readonly ILogger<StockSyncWorker> _logger;
     private readonly MeliClient _meliClient;
     private readonly IConfiguration _configuration;
-    private readonly SemaphoreSlim _semaphore = new(20);
 
     public StockSyncWorker(ILogger<StockSyncWorker> logger, MeliClient meliClient, IConfiguration configuration)
     {
@@ -134,20 +133,12 @@ public class StockSyncWorker
 
     private async Task SyncFullStockAsync(List<StockMappingEntry> mappings, Dictionary<string, int> sourceStock)
     {
-        var tasks = mappings.Where(m => m.Full != null && m.Flex != null).Select(async mapping =>
-        {
-            await _semaphore.WaitAsync();
-            try
-            {
-                await ProcessSingleSyncAsync(mapping, sourceStock);
-            }
-            finally
-            {
-                _semaphore.Release();
-            }
-        });
+        var itemsToSync = mappings.Where(m => m.Full != null && m.Flex != null).ToList();
 
-        await Task.WhenAll(tasks);
+        await Parallel.ForEachAsync(itemsToSync, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (mapping, ct) =>
+        {
+            await ProcessSingleSyncAsync(mapping, sourceStock);
+        });
     }
 
     private async Task ProcessSingleSyncAsync(StockMappingEntry mapping, Dictionary<string, int> sourceStock)

@@ -35,7 +35,7 @@ public class StockMappingIndexer
 
             // 1. Estrategia de Obtención de Datos (Crawler) & 2. Lógica de Negocio (Procesamiento)
             // Usamos ConcurrentDictionary para thread-safety durante el procesamiento paralelo
-            var mapping = new System.Collections.Concurrent.ConcurrentDictionary<string, StockMappingEntry>();
+            var mapping = new ConcurrentDictionary<string, StockMappingEntry>();
 
             string? scrollId = null;
             bool hasMore = true;

@@ -23,10 +23,8 @@ var host = Host.CreateDefaultBuilder(args)
             c.Timeout = TimeSpan.FromMinutes(5);
         })
         .AddHttpMessageHandler<MeliTokenHandler>()
-        .AddPolicyHandler(Policy<HttpResponseMessage>
-            .Handle<HttpRequestException>()
-            .OrTransientHttpError()
-            .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt))));
+        .AddHttpMessageHandler<MeliRateLimitHandler>()
+        .AddPolicyHandler(ResiliencePolicies.GetMeliResiliencePolicy());
 
         services.AddHttpClient("znube", c =>
         {
@@ -44,6 +42,8 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddScoped<PackProcessor>();
         services.AddTransient<ZnubeTokenHandler>();
         services.AddTransient<MeliTokenHandler>();
+        services.AddSingleton<MeliRateLimiter>();
+        services.AddTransient<MeliRateLimitHandler>();
     })
     .Build();
 

@@ -17,6 +17,8 @@ public class MeliTokenHandler : DelegatingHandler
         var accessToken = await _auth.GetValidAccessTokenAsync();
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        return await base.SendAsync(request, cancellationToken);
+        var res = await base.SendAsync(request, cancellationToken);
+        
+        return res;
     }
 }
