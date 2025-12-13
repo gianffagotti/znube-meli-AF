@@ -24,7 +24,7 @@ public class StockMappingIndexer
     }
 
     [Function("StockMappingIndexer")]
-    public async Task Run([TimerTrigger("0 0 4 * * *", RunOnStartup = true)] TimerInfo myTimer)
+    public async Task Run([TimerTrigger("0 0 4 * * *")] TimerInfo myTimer)
     {
         _logger.LogInformation("\u001b[32mStockMappingIndexer executed at: {DateTime.Now}.\u001b[0m", DateTime.Now);
 
