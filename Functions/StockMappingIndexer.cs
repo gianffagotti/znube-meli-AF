@@ -173,17 +173,17 @@ public class StockMappingIndexer
             // Intento 2: Attributes (id === 'SELLER_SKU')
 
             var skuAttr = variation.Attributes.FirstOrDefault(a => a.Id == "SELLER_SKU");
-            if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName;
+            if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.ToUpper();
 
-            if (!string.IsNullOrWhiteSpace(variation.SellerCustomField)) return variation.SellerCustomField;
+            if (!string.IsNullOrWhiteSpace(variation.SellerCustomField)) return variation.SellerCustomField.ToUpper();
         }
         else
         {
             // Item simple
-            if (!string.IsNullOrWhiteSpace(item.SellerCustomField)) return item.SellerCustomField;
+            if (!string.IsNullOrWhiteSpace(item.SellerCustomField)) return item.SellerCustomField.ToUpper();
 
             var skuAttr = item.Attributes.FirstOrDefault(a => a.Id == "SELLER_SKU");
-            if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName;
+            if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.ToUpper();
         }
 
         return null;
