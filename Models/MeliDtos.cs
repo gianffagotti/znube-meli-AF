@@ -13,6 +13,9 @@ public class MeliItem
     [JsonPropertyName("seller_custom_field")]
     public string? SellerCustomField { get; set; }
 
+    [JsonPropertyName("seller_sku")]
+    public string? SellerSku { get; set; }
+
     [JsonPropertyName("shipping")]
     public MeliShipping? Shipping { get; set; }
 
@@ -48,6 +51,9 @@ public class MeliVariation
 
     [JsonPropertyName("seller_custom_field")]
     public string? SellerCustomField { get; set; }
+
+    [JsonPropertyName("seller_sku")]
+    public string? SellerSku { get; set; }
 
     [JsonPropertyName("user_product_id")]
     public string UserProductId { get; set; } = string.Empty;

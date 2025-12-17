@@ -630,6 +630,50 @@ public class MeliClient
         res.EnsureSuccessStatusCode();
         return true;
     }
+
+    public async Task<string?> SearchItemByUserProductIdAsync(string sellerId, string userProductId)
+    {
+        var client = _httpClientFactory.CreateClient("meli");
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"users/{sellerId}/items/search?user_product_id={userProductId}");
+        using var res = await client.SendAsync(req);
+
+        if (!res.IsSuccessStatusCode) return null;
+
+        var json = await res.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in results.EnumerateArray())
+            {
+                return item.GetString(); // Return first match
+            }
+        }
+        return null;
+    }
+
+    public async Task<string?> SearchItemBySkuAsync(string sellerId, string sku)
+    {
+        var client = _httpClientFactory.CreateClient("meli");
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"users/{sellerId}/items/search?sku={Uri.EscapeDataString(sku)}");
+        using var res = await client.SendAsync(req);
+
+        if (!res.IsSuccessStatusCode) return null;
+
+        var json = await res.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in results.EnumerateArray())
+            {
+                return item.GetString(); // Return first match
+            }
+        }
+        return null;
+    }
 }
 
 public class MeliOrder

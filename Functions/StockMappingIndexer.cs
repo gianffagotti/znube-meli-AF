@@ -1,12 +1,10 @@
-using Azure.Storage.Blobs;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
-using System.Text.Json;
 
 namespace meli_znube_integration.Functions;
 
@@ -14,13 +12,14 @@ public class StockMappingIndexer
 {
     private readonly ILogger<StockMappingIndexer> _logger;
     private readonly MeliClient _meliClient;
-    private readonly IConfiguration _configuration;
+    private readonly StockMappingService _stockMappingService;
 
-    public StockMappingIndexer(ILogger<StockMappingIndexer> logger, MeliClient meliClient, IConfiguration configuration)
+
+    public StockMappingIndexer(ILogger<StockMappingIndexer> logger, MeliClient meliClient, StockMappingService stockMappingService)
     {
         _logger = logger;
         _meliClient = meliClient;
-        _configuration = configuration;
+        _stockMappingService = stockMappingService;
     }
 
     [Function("StockMappingIndexer")]
@@ -219,25 +218,27 @@ public class StockMappingIndexer
 
     private async Task PersistMappingsAsync(Dictionary<string, StockMappingEntry> mapping, string containerName)
     {
-        var containerClient = new BlobContainerClient(_configuration[EnvVars.Keys.AzureStorageConnectionString], containerName);
-        await containerClient.CreateIfNotExistsAsync();
+        var serviceMapping = mapping.ToDictionary(
+            kvp => kvp.Key,
+            kvp => new Services.StockMappingEntry
+            {
+                Full = kvp.Value.Full == null ? null : new Services.StockNode
+                {
+                    ItemId = kvp.Value.Full.ItemId,
+                    UserProductId = kvp.Value.Full.UserProductId,
+                    VariationId = kvp.Value.Full.VariationId,
+                    Logistic = kvp.Value.Full.Logistic
+                },
+                Flex = kvp.Value.Flex == null ? null : new Services.StockNode
+                {
+                    ItemId = kvp.Value.Flex.ItemId,
+                    UserProductId = kvp.Value.Flex.UserProductId,
+                    VariationId = kvp.Value.Flex.VariationId,
+                    Logistic = kvp.Value.Flex.Logistic
+                }
+            });
 
-        var shards = mapping.GroupBy(x => GetShardKey(x.Key));
-
-        JsonSerializerOptions options = new() { WriteIndented = true };
-        var tasks = shards.Select(async shard =>
-        {
-            var fileName = $"{shard.Key}.json";
-            var blobClient = containerClient.GetBlobClient(fileName);
-            var content = shard.ToDictionary(x => x.Key, x => x.Value);
-
-            using var ms = new MemoryStream();
-            await JsonSerializer.SerializeAsync(ms, content, options);
-            ms.Position = 0;
-            await blobClient.UploadAsync(ms, overwrite: true);
-        });
-
-        await Task.WhenAll(tasks);
+        await _stockMappingService.PersistMappingsAsync(serviceMapping, containerName);
     }
 
     private static char GetShardKey(string sku)
@@ -246,6 +247,8 @@ public class StockMappingIndexer
         return char.ToUpperInvariant(sku[0]);
     }
 
+    // Internal classes kept for compilation compatibility with existing code in this file
+    // In a full refactor, we would update the whole file to use the service types directly
     public class StockMappingEntry
     {
         public StockNode? Full { get; set; }
