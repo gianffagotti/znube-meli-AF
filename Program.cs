@@ -45,6 +45,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<MeliRateLimiter>();
         services.AddTransient<MeliRateLimitHandler>();
         services.AddSingleton<StockMappingService>();
+        services.AddSingleton<StockRuleService>();
     })
     .Build();
 
