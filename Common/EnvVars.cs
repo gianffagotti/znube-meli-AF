@@ -22,6 +22,7 @@ public static class EnvVars
         public const string SendBuyerMessage = "SEND_BUYER_MESSAGE";
         public const string UpsertOrderNote = "UPSERT_ORDER_NOTE";
         public const string StockRulesTableName = "STOCK_RULES_TABLE";
+        public const string UseV2StockLogic = "USE_V2_STOCK_LOGIC";
     }
 
     public static string? GetString(string key, string? defaultValue = null)

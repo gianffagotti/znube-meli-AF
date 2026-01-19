@@ -1,9 +1,4 @@
-using System;
-using System.Collections.Concurrent;
-using System.Linq;
-using System.Threading.Tasks;
 using meli_znube_integration.Clients;
-using meli_znube_integration.Models;
 using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
