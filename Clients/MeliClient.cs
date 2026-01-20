@@ -555,7 +555,7 @@ public class MeliClient
 
         var client = _httpClientFactory.CreateClient("meli");
         var idsParam = string.Join(",", idList);
-        var url = $"items?ids={idsParam}&include_attributes=all&attributes=id,shipping,variations,seller_custom_field,attributes,title";
+        var url = $"items?ids={idsParam}&include_attributes=all&attributes=id,shipping,variations,seller_custom_field,attributes,title,price,thumbnail,permalink";
 
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         using var res = await client.SendAsync(req);
