@@ -23,6 +23,10 @@ public static class EnvVars
         public const string UpsertOrderNote = "UPSERT_ORDER_NOTE";
         public const string StockRulesTableName = "STOCK_RULES_TABLE";
         public const string UseV2StockLogic = "USE_V2_STOCK_LOGIC";
+
+        public const string EnableJobIndexer = "ENABLE_JOB_INDEXER";
+        public const string EnableJobSyncV1 = "ENABLE_JOB_SYNC_V1";
+        public const string EnableJobSyncV2 = "ENABLE_JOB_SYNC_V2";
     }
 
     public static string? GetString(string key, string? defaultValue = null)

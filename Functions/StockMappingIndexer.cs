@@ -27,6 +27,12 @@ public class StockMappingIndexer
     {
         _logger.LogInformation("\u001b[32mStockMappingIndexer executed at: {DateTime.Now}.\u001b[0m", DateTime.Now);
 
+        if (!EnvVars.GetBool(EnvVars.Keys.EnableJobIndexer, true))
+        {
+            _logger.LogWarning("Job 'StockMappingIndexer' is disabled via configuration.");
+            return;
+        }
+
         try
         {
             // 0. Autenticación

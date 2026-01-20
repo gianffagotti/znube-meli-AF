@@ -27,6 +27,12 @@ public class StockSyncWorker
     {
         _logger.LogInformation("StockSyncWorker started.");
 
+        if (!EnvVars.GetBool(EnvVars.Keys.EnableJobSyncV1, true))
+        {
+            _logger.LogWarning("Job 'StockSyncWorker' (V1) is disabled via configuration.");
+            return;
+        }
+
         try
         {
             // 1. Read Mappings

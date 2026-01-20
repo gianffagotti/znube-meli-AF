@@ -1,4 +1,5 @@
 using meli_znube_integration.Clients;
+using meli_znube_integration.Common;
 using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
@@ -22,6 +23,12 @@ public class StockSyncWorkerV2
     public async Task Run([TimerTrigger("0 */15 * * * *")] TimerInfo myTimer)
     {
         _logger.LogInformation($"Starting Stock Sync V2 at: {DateTime.Now}");
+
+        if (!EnvVars.GetBool(EnvVars.Keys.EnableJobSyncV2, true))
+        {
+            _logger.LogWarning("Job 'StockSyncWorkerV2' is disabled via configuration.");
+            return;
+        }
 
         // Step 1: Load Rules
         var rules = await _stockRuleService.GetAllRulesAsync();
