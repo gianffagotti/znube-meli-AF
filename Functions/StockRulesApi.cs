@@ -126,4 +126,23 @@ public class StockRulesApi
             return response;
         }
     }
+
+    [Function("DeleteStockRulesByGroup")]
+    public async Task<HttpResponseData> DeleteRulesByGroup(
+        [HttpTrigger(AuthorizationLevel.Function, "delete", Route = "rules/group/{motherItemId}")] HttpRequestData req,
+        string motherItemId)
+    {
+        try
+        {
+            await _service.DeleteRulesByMotherItemIdAsync(motherItemId);
+            return req.CreateResponse(HttpStatusCode.OK);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting stock rules by group");
+            var response = req.CreateResponse(HttpStatusCode.InternalServerError);
+            await response.WriteStringAsync("Internal Server Error");
+            return response;
+        }
+    }
 }

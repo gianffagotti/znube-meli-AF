@@ -53,4 +53,14 @@ public class StockRuleService
 
         return rules;
     }
+
+    public async Task DeleteRulesByMotherItemIdAsync(string motherItemId)
+    {
+        var query = _tableClient.QueryAsync<StockRuleEntity>(filter: $"MotherItemId eq '{motherItemId}'");
+
+        await foreach (var rule in query)
+        {
+            await _tableClient.DeleteEntityAsync(rule.PartitionKey, rule.RowKey);
+        }
+    }
 }
