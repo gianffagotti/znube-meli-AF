@@ -1,6 +1,7 @@
 using meli_znube_integration.Common;
-using System.Text.Json;
 using meli_znube_integration.Models;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace meli_znube_integration.Clients;
 
@@ -673,6 +674,57 @@ public class MeliClient
             }
         }
         return null;
+    }
+
+    public async Task<List<string>> SearchItemsGeneralAsync(string sellerId, string query)
+    {
+        var cleanQuery = query.Trim();
+
+        if (Regex.IsMatch(cleanQuery, @"^MLA\d+$", RegexOptions.IgnoreCase))
+        {
+            return [cleanQuery.ToUpper()];
+        }
+
+        var tasks = new List<Task<List<string>>>
+        {
+            // Búsqueda por Título ("q")
+            SearchIdsInternalAsync(sellerId, $"q={Uri.EscapeDataString(cleanQuery)}"),
+
+            // Búsqueda por SKU ("seller_sku")
+            SearchIdsInternalAsync(sellerId, $"seller_sku={Uri.EscapeDataString(cleanQuery)}")
+        };
+
+        await Task.WhenAll(tasks);
+
+        var allIds = tasks.SelectMany(t => t.Result)
+                          .Where(id => !string.IsNullOrWhiteSpace(id))
+                          .Distinct()
+                          .ToList();
+
+        return allIds;
+    }
+
+    private async Task<List<string>> SearchIdsInternalAsync(string sellerId, string queryParam)
+    {
+        var client = _httpClientFactory.CreateClient("meli");
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"users/{sellerId}/items/search?{queryParam}&status=active");
+        using var res = await client.SendAsync(req);
+
+        if (!res.IsSuccessStatusCode) return [];
+
+        var json = await res.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+        {
+            return [.. results.EnumerateArray()
+                .Select(item => item.GetString())
+                .Where(id => !string.IsNullOrEmpty(id))
+                .Cast<string>()];
+        }
+
+        return [];
     }
 }
 

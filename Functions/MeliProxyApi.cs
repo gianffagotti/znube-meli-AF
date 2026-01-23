@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json.Serialization;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
@@ -47,9 +48,10 @@ public class MeliProxyApi
 
             // 2. Get Details
             var items = await _meliClient.GetItemsAsync(ids);
+            var dtos = items.Select(MapToDto).ToList();
 
             var response = req.CreateResponse(HttpStatusCode.OK);
-            await response.WriteAsJsonAsync(items);
+            await response.WriteAsJsonAsync(dtos);
             return response;
         }
         catch (Exception ex)
@@ -82,7 +84,7 @@ public class MeliProxyApi
             }
 
             var response = req.CreateResponse(HttpStatusCode.OK);
-            await response.WriteAsJsonAsync(item);
+            await response.WriteAsJsonAsync(MapToDto(item));
             return response;
         }
         catch (Exception ex)
@@ -93,4 +95,62 @@ public class MeliProxyApi
             return response;
         }
     }
+
+    private static MeliProxyItemDto MapToDto(MeliItem item)
+    {
+        return new MeliProxyItemDto
+        {
+            Id = item.Id,
+            Title = item.Title,
+            Thumbnail = item.Thumbnail,
+            Variations = item.Variations.Select(v => new MeliProxyVariationDto
+            {
+                Id = v.Id,
+                UserProductId = v.UserProductId,
+                Sku = v.Attributes.FirstOrDefault(a => a.Id == "SELLER_SKU")?.ValueName,
+                Description = BuildDescription(v.Attributes)
+            }).ToList()
+        };
+    }
+
+    private static string BuildDescription(List<MeliAttribute> attributes)
+    {
+        var relevantAttributes = attributes
+            .Where(a => !string.IsNullOrEmpty(a.ValueName) && 
+                        (a.Id.Contains("_COLOR", StringComparison.OrdinalIgnoreCase) || 
+                         a.Id.Contains("_SIZE", StringComparison.OrdinalIgnoreCase)))
+            .Select(a => a.ValueName);
+            
+        return string.Join(" - ", relevantAttributes);
+    }
+}
+
+public class MeliProxyItemDto
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("variations")]
+    public List<MeliProxyVariationDto> Variations { get; set; } = new();
+
+    [JsonPropertyName("title")]
+    public string? Title { get; set; }
+
+    [JsonPropertyName("thumbnail")]
+    public string? Thumbnail { get; set; }
+}
+
+public class MeliProxyVariationDto
+{
+    [JsonPropertyName("id")]
+    public long Id { get; set; }
+
+    [JsonPropertyName("user_product_id")]
+    public string UserProductId { get; set; } = string.Empty;
+
+    [JsonPropertyName("sku")]
+    public string? Sku { get; set; }
+
+    [JsonPropertyName("description")]
+    public string? Description { get; set; }
 }
