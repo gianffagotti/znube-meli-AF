@@ -20,7 +20,7 @@ public class StockRulesApi
 
     [Function("GetStockRules")]
     public async Task<HttpResponseData> GetRules(
-        [HttpTrigger(AuthorizationLevel.Function, "get", Route = "rules")] HttpRequestData req)
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "rules")] HttpRequestData req)
     {
         try
         {
@@ -64,7 +64,7 @@ public class StockRulesApi
 
     [Function("UpsertStockRules")]
     public async Task<HttpResponseData> UpsertRules(
-        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "rules")] HttpRequestData req)
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "rules")] HttpRequestData req)
     {
         try
         {
@@ -105,7 +105,7 @@ public class StockRulesApi
 
     [Function("DeleteStockRule")]
     public async Task<HttpResponseData> DeleteRule(
-        [HttpTrigger(AuthorizationLevel.Function, "delete", Route = "rules/{motherUpid}/{childUpid}")] HttpRequestData req,
+        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "rules/{motherUpid}/{childUpid}")] HttpRequestData req,
         string motherUpid,
         string childUpid)
     {
@@ -125,7 +125,7 @@ public class StockRulesApi
 
     [Function("DeleteStockRulesByGroup")]
     public async Task<HttpResponseData> DeleteRulesByGroup(
-        [HttpTrigger(AuthorizationLevel.Function, "delete", Route = "rules/group/{motherItemId}")] HttpRequestData req,
+        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "rules/group/{motherItemId}")] HttpRequestData req,
         string motherItemId)
     {
         try
