@@ -34,7 +34,6 @@ public class StockRulesApi
                     return new StockRuleGroupDto
                     {
                         MotherItemId = g.Key,
-                        MotherSku = first.MotherSku,
                         MotherTitle = first.MotherTitle,
                         MotherThumbnail = first.MotherThumbnail,
                         Rules = g.Select(r => new StockRuleItemDto
@@ -44,7 +43,6 @@ public class StockRulesApi
                             Type = r.Type,
                             PackQuantity = r.PackQuantity,
                             ChildItemId = r.ChildItemId,
-                            ChildSku = r.ChildSku,
                             ChildTitle = r.ChildTitle
                         }).ToList()
                     };
@@ -85,11 +83,9 @@ public class StockRulesApi
                     Type = ruleDto.Type,
                     PackQuantity = ruleDto.PackQuantity,
                     MotherItemId = groupDto.MotherItemId,
-                    MotherSku = groupDto.MotherSku,
                     MotherTitle = groupDto.MotherTitle,
                     MotherThumbnail = groupDto.MotherThumbnail,
                     ChildItemId = ruleDto.ChildItemId,
-                    ChildSku = ruleDto.ChildSku,
                     ChildTitle = ruleDto.ChildTitle
                 };
 

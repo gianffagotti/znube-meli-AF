@@ -25,7 +25,12 @@ public class StockRuleService
 
     public async Task DeleteRuleAsync(string motherUpid, string childUpid)
     {
-        await _tableClient.DeleteEntityAsync(motherUpid, childUpid);
+        var query = _tableClient.QueryAsync<StockRuleEntity>(filter: $"MotherItemId eq '{motherUpid}' and ChildItemId eq '{childUpid}'");
+
+        await foreach (var rule in query)
+        {
+            await _tableClient.DeleteEntityAsync(rule.PartitionKey, rule.RowKey);
+        }
     }
 
     public async Task<List<StockRuleEntity>> GetRulesByMotherUpidAsync(string motherUpid)
