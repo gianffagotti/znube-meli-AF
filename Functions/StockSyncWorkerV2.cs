@@ -20,7 +20,7 @@ public class StockSyncWorkerV2
     }
 
     [Function("StockSyncWorkerV2")]
-    public async Task Run([TimerTrigger("0 0 5,16 * * *", RunOnStartup = true)] TimerInfo myTimer)
+    public async Task Run([TimerTrigger("0 0 5,16 * * *")] TimerInfo myTimer)
     {
         _logger.LogInformation($"Starting Stock Sync V2 at: {DateTime.Now}");
 
