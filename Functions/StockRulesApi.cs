@@ -125,7 +125,7 @@ public class StockRulesApi
 
     [Function("DeleteStockRulesByGroup")]
     public async Task<HttpResponseData> DeleteRulesByGroup(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "rules/group/{motherItemId}")] HttpRequestData req,
+        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "rules-group/{motherItemId}")] HttpRequestData req,
         string motherItemId)
     {
         try
