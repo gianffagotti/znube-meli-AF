@@ -318,68 +318,90 @@ public class WebhookNotificationFunction
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        // Step 1: Parse Resource
-        var motherUserProductId = ExtractUserProductId(resource);
-        if (string.IsNullOrWhiteSpace(motherUserProductId))
+        // Step 1: Parse Resource (Source Item)
+        var sourceItemId = ExtractUserProductId(resource);
+        if (string.IsNullOrWhiteSpace(sourceItemId))
         {
             _logger.LogWarning("V2: No se pudo extraer user_product_id de: {Resource}", resource);
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        // Step 2: Lookup Rules
-        var rules = await _stockRuleService.GetRulesByMotherUpidAsync(motherUserProductId);
+        // Step 2: Lookup Affected Rules (Reverse Index)
+        // Note: The index returns StockSourceIndexEntity, which has RuleType but not the full rule definition.
+        // We need the full rule definition to get the list of components.
+        // So we need to fetch the Rule Entity using the Index info.
+        // Index: PK=Source, RK=Target.
+        // Rule: PK=SellerId, RK=Target.
+        // We need SellerId. We can get it from EnvVars.
+        
+        var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+        var affectedIndexes = await _stockRuleService.GetAffectedRulesBySourceAsync(sourceItemId);
 
-        // Step 3: Validation
-        if (rules == null || rules.Count == 0)
+        if (affectedIndexes == null || affectedIndexes.Count == 0)
         {
-            // No rules for this item, nothing to do.
+            // No rules affected by this source.
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        // Step 4: Get Mother Stock
-        var motherStock = await _meliClient.GetUserProductStockAsync(motherUserProductId);
-        if (motherStock == null)
+        _logger.LogInformation("V2: Source {SourceId} affects {Count} rules.", sourceItemId, affectedIndexes.Count);
+
+        // Step 3: Iterate & Update Targets
+        foreach (var index in affectedIndexes)
         {
-            _logger.LogWarning("V2: No se pudo obtener stock del mother: {MotherUpid}", motherUserProductId);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
+            var targetItemId = index.RowKey; // Target is RK in Index
 
-        int motherQuantity = motherStock.Value.Quantity;
-        _logger.LogInformation("V2: Mother {MotherUpid} Stock: {Quantity}. Found {RuleCount} rules.", motherUserProductId, motherQuantity, rules.Count);
-
-        // Step 5: Iterate & Update
-        foreach (var rule in rules)
-        {
-            if (rule.PackQuantity <= 0)
+            try 
             {
-                _logger.LogWarning("V2: Regla inválida (PackQuantity <= 0) para Child: {ChildUpid}", rule.RowKey);
-                continue;
-            }
+                // Fetch Full Rule Definition using efficient lookup
+                var rule = await _stockRuleService.GetRuleAsync(sellerId, targetItemId);
 
-            int targetQty = (int)Math.Floor((double)motherQuantity / rule.PackQuantity);
-
-            // Fetch Child Stock to get version and current quantity
-            var childStock = await _meliClient.GetUserProductStockAsync(rule.RowKey);
-            if (childStock == null)
-            {
-                _logger.LogWarning("V2: No se pudo leer stock del child: {ChildUpid}", rule.RowKey);
-                continue;
-            }
-
-            if (childStock.Value.Quantity != targetQty)
-            {
-                _logger.LogInformation("V2: Actualizando Child {ChildUpid}. {CurrentQty} -> {TargetQty} (Mother: {MotherQty}, Pack: {PackQty})", 
-                    rule.RowKey, childStock.Value.Quantity, targetQty, motherQuantity, rule.PackQuantity);
-
-                var success = await _meliClient.UpdateUserProductStockAsync(rule.RowKey, targetQty, childStock.Value.Version);
-                if (!success)
+                if (rule == null)
                 {
-                    _logger.LogWarning("V2: Conflicto de concurrencia al actualizar Child {ChildUpid}", rule.RowKey);
+                    _logger.LogWarning("V2: Rule definition not found for Target {TargetId} (Seller {SellerId})", targetItemId, sellerId);
+                    continue;
+                }
+
+                var components = JsonSerializer.Deserialize<List<RuleComponentDto>>(rule.ComponentsJson);
+                if (components == null || components.Count == 0) continue;
+
+                int minPotentialQty = int.MaxValue;
+                bool canCalculate = true;
+
+                foreach (var component in components)
+                {
+                    // Optimization: If component is the source that triggered this, we could use the quantity from the notification?
+                    // But the notification might not have quantity.
+                    // So we fetch stock.
+                    var compStock = await _meliClient.GetUserProductStockAsync(component.SourceItemId);
+                    if (compStock == null)
+                    {
+                        canCalculate = false;
+                        break;
+                    }
+
+                    int componentQty = component.Quantity > 0 ? component.Quantity : 1;
+                    int possibleQty = (int)Math.Floor((double)compStock.Value.Quantity / componentQty);
+
+                    if (possibleQty < minPotentialQty) minPotentialQty = possibleQty;
+                }
+
+                if (!canCalculate) continue;
+
+                int targetQty = minPotentialQty;
+                if (targetQty == int.MaxValue) targetQty = 0;
+
+                var targetStock = await _meliClient.GetUserProductStockAsync(targetItemId);
+                if (targetStock == null) continue;
+
+                if (targetStock.Value.Quantity != targetQty)
+                {
+                    _logger.LogInformation("V2: Updating Target {TargetId}: {OldQty} -> {NewQty}", targetItemId, targetStock.Value.Quantity, targetQty);
+                    await _meliClient.UpdateUserProductStockAsync(targetItemId, targetQty, targetStock.Value.Version);
                 }
             }
-            else
+            catch (Exception ex)
             {
-                // _logger.LogInformation("V2: Child {ChildUpid} ya está sincronizado ({Qty})", rule.RowKey, targetQty);
+                _logger.LogError(ex, "V2: Error processing target {TargetId}", targetItemId);
             }
         }
 

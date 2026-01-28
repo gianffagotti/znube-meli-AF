@@ -1,8 +1,10 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
+using meli_znube_integration.Models;
 using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace meli_znube_integration.Functions;
 
@@ -40,74 +42,77 @@ public class StockSyncWorkerV2
 
         _logger.LogInformation($"Loaded {rules.Count} rules.");
 
-        // Step 2: Group by Mother
-        var rulesByMother = rules.GroupBy(r => r.PartitionKey);
-
-        // Step 3: Process Groups (Parallel Loop)
+        // Step 2: Process Rules (Parallel Loop)
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 5 };
         
-        await Parallel.ForEachAsync(rulesByMother, parallelOptions, async (group, ct) =>
+        await Parallel.ForEachAsync(rules, parallelOptions, async (rule, ct) =>
         {
-            var motherUpid = group.Key;
             try
             {
-                // Step 4: Sync Logic (Per Mother)
-                // Fetch Mother Stock
-                var motherStock = await _meliClient.GetUserProductStockAsync(motherUpid);
-                if (motherStock == null)
+                var components = JsonSerializer.Deserialize<List<RuleComponentDto>>(rule.ComponentsJson);
+                if (components == null || components.Count == 0)
                 {
-                    _logger.LogWarning($"Could not fetch stock for Mother {motherUpid}. Skipping group.");
+                    _logger.LogWarning($"Rule for Target {rule.RowKey} has no components. Skipping.");
                     return;
                 }
 
-                int motherQuantity = motherStock.Value.Quantity;
+                int minPotentialQty = int.MaxValue;
+                bool canCalculate = true;
 
-                // Iterate Children Rules
-                foreach (var rule in group)
+                // Step 3: Calculate Target Quantity based on Components
+                foreach (var component in components)
                 {
-                    try
+                    var sourceStock = await _meliClient.GetUserProductStockAsync(component.SourceItemId);
+                    if (sourceStock == null)
                     {
-                        // Calculate Target Quantity
-                        // Ensure strict type casting for the math (integers)
-                        // rule.PackQuantity defaults to 1 if 0 to avoid divide by zero, though model has default 1
-                        int packQty = rule.PackQuantity > 0 ? rule.PackQuantity : 1;
-                        int targetQty = (int)Math.Floor((double)motherQuantity / packQty);
-
-                        // Fetch Child Stock
-                        var childUpid = rule.RowKey;
-                        var childStock = await _meliClient.GetUserProductStockAsync(childUpid);
-
-                        if (childStock == null)
-                        {
-                            _logger.LogWarning($"Could not fetch stock for Child {childUpid} (Mother: {motherUpid}). Skipping child.");
-                            continue;
-                        }
-
-                        // Compare & Update
-                        if (childStock.Value.Quantity != targetQty)
-                        {
-                            _logger.LogInformation($"Updating Child {rule.ChildSku} ({childUpid}): {childStock.Value.Quantity} -> {targetQty} (Mother: {rule.MotherSku} Qty: {motherQuantity})");
-                            
-                            var success = await _meliClient.UpdateUserProductStockAsync(childUpid, targetQty, childStock.Value.Version);
-                            
-                            if (!success)
-                            {
-                                _logger.LogWarning($"Failed to update Child {rule.ChildSku} ({childUpid}).");
-                            }
-                        }
+                        _logger.LogWarning($"Could not fetch stock for Source {component.SourceItemId} (Target: {rule.RowKey}). Skipping rule.");
+                        canCalculate = false;
+                        break;
                     }
-                    catch (Exception ex)
+
+                    int componentQty = component.Quantity > 0 ? component.Quantity : 1;
+                    int possibleQty = (int)Math.Floor((double)sourceStock.Value.Quantity / componentQty);
+
+                    if (possibleQty < minPotentialQty)
                     {
-                        _logger.LogError(ex, $"Error processing child rule {rule.RowKey} for mother {motherUpid}");
+                        minPotentialQty = possibleQty;
+                    }
+                }
+
+                if (!canCalculate) return;
+
+                int targetQty = minPotentialQty;
+                if (targetQty == int.MaxValue) targetQty = 0; // Should not happen if components > 0
+
+                // Step 4: Fetch Target Stock & Update
+                var targetUpid = rule.RowKey;
+                var targetStock = await _meliClient.GetUserProductStockAsync(targetUpid);
+
+                if (targetStock == null)
+                {
+                    _logger.LogWarning($"Could not fetch stock for Target {targetUpid}. Skipping.");
+                    return;
+                }
+
+                if (targetStock.Value.Quantity != targetQty)
+                {
+                    _logger.LogInformation($"Updating Target {rule.TargetSku} ({targetUpid}): {targetStock.Value.Quantity} -> {targetQty}");
+                    
+                    var success = await _meliClient.UpdateUserProductStockAsync(targetUpid, targetQty, targetStock.Value.Version);
+                    
+                    if (!success)
+                    {
+                        _logger.LogWarning($"Failed to update Target {rule.TargetSku} ({targetUpid}).");
                     }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error processing mother group {motherUpid}");
+                _logger.LogError(ex, $"Error processing rule for target {rule.RowKey}");
             }
         });
 
         _logger.LogInformation($"Stock Sync V2 finished at: {DateTime.Now}");
     }
 }
+

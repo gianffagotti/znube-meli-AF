@@ -5,26 +5,27 @@ namespace meli_znube_integration.Models;
 
 public class StockRuleEntity : ITableEntity
 {
-    // PartitionKey: MotherUserProductId (The source variant ID)
+    // PartitionKey: SellerId
     public string PartitionKey { get; set; } = default!;
 
-    // RowKey: ChildUserProductId (The target variant ID)
+    // RowKey: TargetItemId (The ID of the Publication to update, e.g., the Combo ID)
     public string RowKey { get; set; } = default!;
 
     public DateTimeOffset? Timestamp { get; set; }
     public ETag ETag { get; set; }
 
     // Config Properties
-    public string Type { get; set; } = "FULL"; // "FULL" or "PACK"
-    public int PackQuantity { get; set; } = 1;
+    public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
+    
+    // Serialized list of components. Each component has SourceItemId and Quantity
+    public string ComponentsJson { get; set; } = "[]"; 
+    
+    // Serialized logic for variant mapping. e.g., "Black Shirt L" maps to "Combo Black L"
+    public string MappingJson { get; set; } = "{}";
 
-    // Info Properties (for UI cache)
-    public string MotherItemId { get; set; } = default!;
-    public string MotherSku { get; set; } = default!;
-    public string? MotherTitle { get; set; }
-    public string? MotherThumbnail { get; set; }
-
-    public string ChildItemId { get; set; } = default!;
-    public string ChildSku { get; set; } = default!;
-    public string ChildTitle { get; set; } = default!;
+    // Target Info (The item being updated)
+    public string TargetItemId { get; set; } = default!;
+    public string TargetSku { get; set; } = default!;
+    public string TargetTitle { get; set; } = default!;
+    public string? TargetThumbnail { get; set; }
 }

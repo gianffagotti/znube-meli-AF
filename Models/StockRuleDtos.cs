@@ -2,30 +2,34 @@ using System.Text.Json.Serialization;
 
 namespace meli_znube_integration.Models;
 
-public class StockRuleGroupDto
+public class StockRuleDto
 {
-    [JsonPropertyName("motherItemId")]
-    public string MotherItemId { get; set; } = default!;
-    [JsonPropertyName("motherTitle")]
-    public string? MotherTitle { get; set; }
-    [JsonPropertyName("motherThumbnail")]
-    public string? MotherThumbnail { get; set; }
-    [JsonPropertyName("rules")]
-    public List<StockRuleItemDto> Rules { get; set; } = new();
+    [JsonPropertyName("targetItemId")]
+    public string TargetItemId { get; set; } = default!;
+    
+    [JsonPropertyName("targetTitle")]
+    public string TargetTitle { get; set; } = default!;
+    
+    [JsonPropertyName("targetThumbnail")]
+    public string? TargetThumbnail { get; set; }
+
+    [JsonPropertyName("ruleType")]
+    public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
+
+    [JsonPropertyName("components")]
+    public List<RuleComponentDto> Components { get; set; } = new();
+
+    // Optional: For mapping logic if needed in frontend
+    [JsonPropertyName("mapping")]
+    public Dictionary<string, string>? Mapping { get; set; }
 }
 
-public class StockRuleItemDto
+public class RuleComponentDto
 {
-    [JsonPropertyName("motherUserProductId")]
-    public string MotherUserProductId { get; set; } = default!;
-    [JsonPropertyName("childUserProductId")]
-    public string ChildUserProductId { get; set; } = default!;
-    [JsonPropertyName("type")]
-    public string Type { get; set; } = "FULL";
-    [JsonPropertyName("packQuantity")]
-    public int PackQuantity { get; set; } = 1;
-    [JsonPropertyName("childItemId")]
-    public string ChildItemId { get; set; } = default!;
-    [JsonPropertyName("childTitle")]
-    public string ChildTitle { get; set; } = default!;
+    [JsonPropertyName("sourceItemId")]
+    public string SourceItemId { get; set; } = default!;
+
+    [JsonPropertyName("quantity")]
+    public int Quantity { get; set; } = 1;
 }
+
