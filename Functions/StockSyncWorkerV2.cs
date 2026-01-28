@@ -2,6 +2,7 @@ using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Services;
+using meli_znube_integration.Services.Calculators;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
@@ -12,12 +13,18 @@ public class StockSyncWorkerV2
 {
     private readonly StockRuleService _stockRuleService;
     private readonly MeliClient _meliClient;
+    private readonly StockCalculatorFactory _calculatorFactory;
     private readonly ILogger<StockSyncWorkerV2> _logger;
 
-    public StockSyncWorkerV2(StockRuleService stockRuleService, MeliClient meliClient, ILogger<StockSyncWorkerV2> logger)
+    public StockSyncWorkerV2(
+        StockRuleService stockRuleService, 
+        MeliClient meliClient, 
+        StockCalculatorFactory calculatorFactory,
+        ILogger<StockSyncWorkerV2> logger)
     {
         _stockRuleService = stockRuleService;
         _meliClient = meliClient;
+        _calculatorFactory = calculatorFactory;
         _logger = logger;
     }
 
@@ -49,6 +56,7 @@ public class StockSyncWorkerV2
         {
             try
             {
+                // 1. Identify Components
                 var components = JsonSerializer.Deserialize<List<RuleComponentDto>>(rule.ComponentsJson);
                 if (components == null || components.Count == 0)
                 {
@@ -56,53 +64,83 @@ public class StockSyncWorkerV2
                     return;
                 }
 
-                int minPotentialQty = int.MaxValue;
-                bool canCalculate = true;
-
-                // Step 3: Calculate Target Quantity based on Components
-                foreach (var component in components)
+                // 2. Fetch Source Items
+                // We need to fetch the ITEMS, not just stock, because Calculators need Variations/SKUs.
+                // Component.SourceItemId might be VariantID or ItemID.
+                // MeliClient.GetItemsAsync takes ItemIDs.
+                // If SourceItemId is a VariantID (UserProductId), we need to find the ItemID first?
+                // Or does GetItemsAsync work with UserProductId? No, usually ItemID (MLA...).
+                // Issue: If we only have UserProductId (VariantID), we can't easily fetch the Item without search.
+                // Assumption: SourceItemId in Component IS the ItemID (MLA...) OR we have a way to get it.
+                // If the previous logic used `GetUserProductStockAsync(upid)`, it implies we have UPID.
+                // But `GetItemsAsync` needs ItemID.
+                
+                // Let's assume for now we fetch stock using UPID for the simple check, 
+                // BUT for the Calculator we need the full Item object.
+                // If we don't have ItemID, we are stuck.
+                // Let's assume `SourceItemId` IS the ItemID (MLA...) for the purpose of fetching full data.
+                // OR we use `SearchItemByUserProductIdAsync` if it's a UPID.
+                
+                var sourceItems = new List<MeliItem>();
+                foreach (var comp in components)
                 {
-                    var sourceStock = await _meliClient.GetUserProductStockAsync(component.SourceItemId);
-                    if (sourceStock == null)
+                    string itemId = comp.SourceItemId;
+                    if (!itemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase)) // Heuristic
                     {
-                        _logger.LogWarning($"Could not fetch stock for Source {component.SourceItemId} (Target: {rule.RowKey}). Skipping rule.");
-                        canCalculate = false;
-                        break;
+                        // It's likely a UserProductId, try to resolve ItemID
+                        var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId), comp.SourceItemId);
+                        if (!string.IsNullOrWhiteSpace(resolvedId)) itemId = resolvedId;
                     }
 
-                    int componentQty = component.Quantity > 0 ? component.Quantity : 1;
-                    int possibleQty = (int)Math.Floor((double)sourceStock.Value.Quantity / componentQty);
-
-                    if (possibleQty < minPotentialQty)
+                    if (!string.IsNullOrWhiteSpace(itemId))
                     {
-                        minPotentialQty = possibleQty;
+                        var items = await _meliClient.GetItemsAsync(new[] { itemId });
+                        if (items != null && items.Count > 0) sourceItems.AddRange(items);
                     }
                 }
 
-                if (!canCalculate) return;
-
-                int targetQty = minPotentialQty;
-                if (targetQty == int.MaxValue) targetQty = 0; // Should not happen if components > 0
-
-                // Step 4: Fetch Target Stock & Update
-                var targetUpid = rule.RowKey;
-                var targetStock = await _meliClient.GetUserProductStockAsync(targetUpid);
-
-                if (targetStock == null)
+                if (sourceItems.Count == 0)
                 {
-                    _logger.LogWarning($"Could not fetch stock for Target {targetUpid}. Skipping.");
+                    _logger.LogWarning($"Could not fetch source items for Target {rule.RowKey}. Skipping.");
                     return;
                 }
 
-                if (targetStock.Value.Quantity != targetQty)
+                // 3. Fetch Target Item
+                // We need the full Target Item to know its variants.
+                // Rule.RowKey is TargetItemId (or UPID?). 
+                // Refactoring said "RowKey: TargetItemId".
+                string targetItemId = rule.RowKey;
+                if (!targetItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
                 {
-                    _logger.LogInformation($"Updating Target {rule.TargetSku} ({targetUpid}): {targetStock.Value.Quantity} -> {targetQty}");
-                    
-                    var success = await _meliClient.UpdateUserProductStockAsync(targetUpid, targetQty, targetStock.Value.Version);
-                    
-                    if (!success)
+                     var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId), targetItemId);
+                     if (!string.IsNullOrWhiteSpace(resolvedId)) targetItemId = resolvedId;
+                }
+
+                var targetItems = await _meliClient.GetItemsAsync(new[] { targetItemId });
+                var targetItem = targetItems?.FirstOrDefault();
+
+                if (targetItem == null)
+                {
+                    _logger.LogWarning($"Could not fetch Target Item {rule.RowKey}. Skipping.");
+                    return;
+                }
+
+                // 4. Calculate
+                var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
+                var updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
+
+                // 5. Update
+                foreach (var update in updates)
+                {
+                    // Fetch current stock to check if update is needed (and get version)
+                    var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
+                    if (currentStock != null)
                     {
-                        _logger.LogWarning($"Failed to update Target {rule.TargetSku} ({targetUpid}).");
+                        if (currentStock.Value.Quantity != update.NewQuantity)
+                        {
+                            _logger.LogInformation($"Updating Target Variant {update.TargetVariantId}: {currentStock.Value.Quantity} -> {update.NewQuantity}");
+                            await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version);
+                        }
                     }
                 }
             }
