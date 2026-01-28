@@ -17,6 +17,7 @@ public class WebhookNotificationFunction
     private readonly PackProcessor _processor;
     private readonly MeliClient _meliClient;
     private readonly StockMappingService _stockMappingService;
+    private readonly StockRuleService _stockRuleService;
     private readonly ILogger<WebhookNotificationFunction> _logger;
     private readonly IConfiguration _configuration;
 
@@ -24,12 +25,14 @@ public class WebhookNotificationFunction
         PackProcessor processor,
         MeliClient meliClient,
         StockMappingService stockMappingService,
+        StockRuleService stockRuleService,
         ILogger<WebhookNotificationFunction> logger,
         IConfiguration configuration)
     {
         _processor = processor;
         _meliClient = meliClient;
         _stockMappingService = stockMappingService;
+        _stockRuleService = stockRuleService;
         _logger = logger;
         _configuration = configuration;
     }
@@ -90,6 +93,12 @@ public class WebhookNotificationFunction
 
     private async Task<HttpResponseData> ProcessStockNotification(HttpRequestData req, string? resource)
     {
+        bool useV2 = EnvVars.GetBool(EnvVars.Keys.UseV2StockLogic, false);
+        if (useV2)
+        {
+            return await ProcessStockNotificationV2(req, resource);
+        }
+
         // Resource format: /user-products/{user_product_id}/stock
         var userId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
         if (string.IsNullOrWhiteSpace(resource) || string.IsNullOrWhiteSpace(userId))
@@ -298,6 +307,83 @@ public class WebhookNotificationFunction
             _logger.LogError(ex, "Error procesando orden {OrderId}", orderId);
             throw;
         }
+    }
+
+    private async Task<HttpResponseData> ProcessStockNotificationV2(HttpRequestData req, string? resource)
+    {
+        _logger.LogInformation("Executing V2 logic for stock notification. Resource: {Resource}", resource);
+
+        if (string.IsNullOrWhiteSpace(resource))
+        {
+            return req.CreateResponse(HttpStatusCode.OK);
+        }
+
+        // Step 1: Parse Resource
+        var motherUserProductId = ExtractUserProductId(resource);
+        if (string.IsNullOrWhiteSpace(motherUserProductId))
+        {
+            _logger.LogWarning("V2: No se pudo extraer user_product_id de: {Resource}", resource);
+            return req.CreateResponse(HttpStatusCode.OK);
+        }
+
+        // Step 2: Lookup Rules
+        var rules = await _stockRuleService.GetRulesByMotherUpidAsync(motherUserProductId);
+
+        // Step 3: Validation
+        if (rules == null || rules.Count == 0)
+        {
+            // No rules for this item, nothing to do.
+            return req.CreateResponse(HttpStatusCode.OK);
+        }
+
+        // Step 4: Get Mother Stock
+        var motherStock = await _meliClient.GetUserProductStockAsync(motherUserProductId);
+        if (motherStock == null)
+        {
+            _logger.LogWarning("V2: No se pudo obtener stock del mother: {MotherUpid}", motherUserProductId);
+            return req.CreateResponse(HttpStatusCode.OK);
+        }
+
+        int motherQuantity = motherStock.Value.Quantity;
+        _logger.LogInformation("V2: Mother {MotherUpid} Stock: {Quantity}. Found {RuleCount} rules.", motherUserProductId, motherQuantity, rules.Count);
+
+        // Step 5: Iterate & Update
+        foreach (var rule in rules)
+        {
+            if (rule.PackQuantity <= 0)
+            {
+                _logger.LogWarning("V2: Regla inválida (PackQuantity <= 0) para Child: {ChildUpid}", rule.RowKey);
+                continue;
+            }
+
+            int targetQty = (int)Math.Floor((double)motherQuantity / rule.PackQuantity);
+
+            // Fetch Child Stock to get version and current quantity
+            var childStock = await _meliClient.GetUserProductStockAsync(rule.RowKey);
+            if (childStock == null)
+            {
+                _logger.LogWarning("V2: No se pudo leer stock del child: {ChildUpid}", rule.RowKey);
+                continue;
+            }
+
+            if (childStock.Value.Quantity != targetQty)
+            {
+                _logger.LogInformation("V2: Actualizando Child {ChildUpid}. {CurrentQty} -> {TargetQty} (Mother: {MotherQty}, Pack: {PackQty})", 
+                    rule.RowKey, childStock.Value.Quantity, targetQty, motherQuantity, rule.PackQuantity);
+
+                var success = await _meliClient.UpdateUserProductStockAsync(rule.RowKey, targetQty, childStock.Value.Version);
+                if (!success)
+                {
+                    _logger.LogWarning("V2: Conflicto de concurrencia al actualizar Child {ChildUpid}", rule.RowKey);
+                }
+            }
+            else
+            {
+                // _logger.LogInformation("V2: Child {ChildUpid} ya está sincronizado ({Qty})", rule.RowKey, targetQty);
+            }
+        }
+
+        return req.CreateResponse(HttpStatusCode.OK);
     }
 
     private static string ExtractLastSegment(string path)

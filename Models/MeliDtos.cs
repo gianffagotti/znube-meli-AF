@@ -27,6 +27,18 @@ public class MeliItem
 
     [JsonPropertyName("available_quantity")]
     public int AvailableQuantity { get; set; }
+
+    [JsonPropertyName("title")]
+    public string? Title { get; set; }
+
+    [JsonPropertyName("price")]
+    public decimal? Price { get; set; }
+
+    [JsonPropertyName("thumbnail")]
+    public string? Thumbnail { get; set; }
+
+    [JsonPropertyName("permalink")]
+    public string? Permalink { get; set; }
 }
 
 public class MeliShipping

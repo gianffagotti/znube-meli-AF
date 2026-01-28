@@ -22,10 +22,42 @@ public class StockSyncWorker
         _configuration = configuration;
     }
 
+    //[Function("TestsWorker")]
+    public async Task TestsWorker([TimerTrigger("0 0 5,16 * * *", RunOnStartup = true)] TimerInfo myTimer)
+    {
+        try
+        {
+            var mappings = await LoadMappingsAsync();
+
+            var groupFlexItemIdWithFullItemIds = mappings
+                .Where(m => m.Flex != null && m.Full != null)
+                .GroupBy(m => m.Flex!.ItemId)
+                .ToDictionary(g => g.Key, g => g.Select(m => m.Full!.ItemId).Distinct().ToList())
+                .OrderByDescending(g => g.Value.Count)
+                .ToList();
+
+            var groupFlexItemIdWithFullItemIdsStringFormatted = groupFlexItemIdWithFullItemIds
+                .Select(g => $"Flex Item ID: {g.Key} -> Full Item IDs: [{string.Join(", ", g.Value)}]");
+
+            var groupFlexItemIdWithFullItemIdsStringText = string.Join(Environment.NewLine, groupFlexItemIdWithFullItemIdsStringFormatted);
+        }
+        catch (Exception)
+        {
+
+            throw;
+        }
+    }
+
     [Function("StockSyncWorker")]
     public async Task Run([TimerTrigger("0 0 5,16 * * *")] TimerInfo myTimer)
     {
         _logger.LogInformation("StockSyncWorker started.");
+
+        if (!EnvVars.GetBool(EnvVars.Keys.EnableJobSyncV1, true))
+        {
+            _logger.LogWarning("Job 'StockSyncWorker' (V1) is disabled via configuration.");
+            return;
+        }
 
         try
         {
