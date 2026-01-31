@@ -103,13 +103,13 @@ public class MeliProxyApi
             Id = item.Id,
             Title = item.Title,
             Thumbnail = item.Thumbnail,
-            Variations = item.Variations.Select(v => new MeliProxyVariationDto
+            Variations = [.. item.Variations.Select(v => new MeliProxyVariationDto
             {
                 Id = v.Id,
                 UserProductId = v.UserProductId,
                 Sku = v.Attributes.FirstOrDefault(a => a.Id == "SELLER_SKU")?.ValueName,
                 Description = BuildDescription(v.Attributes)
-            }).ToList()
+            }).OrderBy(v => v.Sku)]
         };
     }
 

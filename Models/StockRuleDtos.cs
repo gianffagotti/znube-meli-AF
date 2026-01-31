@@ -6,10 +6,10 @@ public class StockRuleDto
 {
     [JsonPropertyName("targetItemId")]
     public string TargetItemId { get; set; } = default!;
-    
+
     [JsonPropertyName("targetTitle")]
     public string TargetTitle { get; set; } = default!;
-    
+
     [JsonPropertyName("targetThumbnail")]
     public string? TargetThumbnail { get; set; }
 
@@ -17,11 +17,10 @@ public class StockRuleDto
     public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
 
     [JsonPropertyName("components")]
-    public List<RuleComponentDto> Components { get; set; } = new();
+    public List<RuleComponentDto> Components { get; set; } = [];
 
-    // Optional: For mapping logic if needed in frontend
-    [JsonPropertyName("mapping")]
-    public Dictionary<string, string>? Mapping { get; set; }
+    [JsonPropertyName("mappings")]
+    public List<VariantMappingDto> Mappings { get; set; } = [];
 }
 
 public class RuleComponentDto
@@ -33,3 +32,11 @@ public class RuleComponentDto
     public int Quantity { get; set; } = 1;
 }
 
+public class VariantMappingDto
+{
+    [JsonPropertyName("targetVariantId")]
+    public string TargetVariantId { get; set; } = default!;
+
+    [JsonPropertyName("sourceMatches")]
+    public Dictionary<string, string> SourceMatches { get; set; } = new();
+}

@@ -35,8 +35,12 @@ public class StockRulesApi
                 TargetTitle = r.TargetTitle,
                 TargetThumbnail = r.TargetThumbnail,
                 RuleType = r.RuleType,
-                Components = JsonSerializer.Deserialize<List<RuleComponentDto>>(r.ComponentsJson) ?? new List<RuleComponentDto>(),
-                Mapping = JsonSerializer.Deserialize<Dictionary<string, string>>(r.MappingJson)
+                Components = !string.IsNullOrEmpty(r.ComponentsJson)
+                    ? JsonSerializer.Deserialize<List<RuleComponentDto>>(r.ComponentsJson) ?? []
+                    : [],
+                Mappings = !string.IsNullOrEmpty(r.MappingJson)
+                    ? JsonSerializer.Deserialize<List<VariantMappingDto>>(r.MappingJson) ?? []
+                    : []
             }).ToList();
 
             var response = req.CreateResponse(HttpStatusCode.OK);
@@ -72,7 +76,7 @@ public class StockRulesApi
                 RowKey = ruleDto.TargetItemId,
                 RuleType = ruleDto.RuleType,
                 ComponentsJson = JsonSerializer.Serialize(ruleDto.Components),
-                MappingJson = ruleDto.Mapping != null ? JsonSerializer.Serialize(ruleDto.Mapping) : "{}",
+                MappingJson = JsonSerializer.Serialize(ruleDto.Mappings),
                 TargetItemId = ruleDto.TargetItemId,
                 TargetTitle = ruleDto.TargetTitle,
                 TargetThumbnail = ruleDto.TargetThumbnail
@@ -111,4 +115,3 @@ public class StockRulesApi
         }
     }
 }
-
