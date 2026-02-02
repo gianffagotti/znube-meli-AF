@@ -12,6 +12,9 @@ public class StockRuleDto
 
     [JsonPropertyName("targetThumbnail")]
     public string? TargetThumbnail { get; set; }
+    
+    [JsonPropertyName("targetSku")]
+    public string TargetSku { get; set; } = default!;
 
     [JsonPropertyName("ruleType")]
     public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
@@ -36,7 +39,25 @@ public class VariantMappingDto
 {
     [JsonPropertyName("targetVariantId")]
     public string TargetVariantId { get; set; } = default!;
+    
+    [JsonPropertyName("targetSku")]
+    public string TargetSku { get; set; } = default!;
 
     [JsonPropertyName("sourceMatches")]
-    public Dictionary<string, string> SourceMatches { get; set; } = new();
+    public List<RuleSourceMatchDto> SourceMatches { get; set; } = new();
+}
+
+public class RuleSourceMatchDto
+{
+    [JsonPropertyName("sourceItemId")]
+    public string SourceItemId { get; set; } = default!;
+    
+    [JsonPropertyName("sourceVariantId")]
+    public string SourceVariantId { get; set; } = default!;
+    
+    [JsonPropertyName("sourceSku")]
+    public string SourceSku { get; set; } = default!;
+    
+    [JsonPropertyName("quantity")]
+    public int Quantity { get; set; }
 }

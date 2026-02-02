@@ -14,7 +14,7 @@ public class PackStockCalculator : IStockCalculator
 
     public string RuleType => "PACK";
 
-    public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleEntity rule, MeliItem targetItem, List<MeliItem> sourceItems)
+    public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, MeliItem targetItem, List<MeliItem> sourceItems)
     {
         var updates = new List<VariantStockUpdate>();
 
@@ -42,19 +42,11 @@ public class PackStockCalculator : IStockCalculator
         }
 
         // 2. Get Pack Quantity
-        // Assuming PackQuantity is stored in ComponentsJson or we need to parse it?
-        // The RuleEntity has ComponentsJson.
-        // For PACK, usually there is 1 component with Quantity > 1.
         int packQty = 1;
-        try 
+        if (rule.Components != null && rule.Components.Count > 0)
         {
-            var components = JsonSerializer.Deserialize<List<RuleComponentDto>>(rule.ComponentsJson);
-            if (components != null && components.Count > 0)
-            {
-                packQty = components[0].Quantity;
-            }
+            packQty = rule.Components[0].Quantity;
         }
-        catch {}
         if (packQty < 1) packQty = 1;
 
         // 3. Iterate Target Variants

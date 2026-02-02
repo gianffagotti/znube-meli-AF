@@ -57,10 +57,14 @@ public class StockSyncWorkerV2
             try
             {
                 // 1. Identify Components
-                var components = JsonSerializer.Deserialize<List<RuleComponentDto>>(rule.ComponentsJson);
+                var components = rule.Components;
+                
+                // rule.TargetItemId replaces rule.RowKey
+                var targetItemId = rule.TargetItemId;
+
                 if (components == null || components.Count == 0)
                 {
-                    _logger.LogWarning($"Rule for Target {rule.RowKey} has no components. Skipping.");
+                    _logger.LogWarning($"Rule for Target {targetItemId} has no components. Skipping.");
                     return;
                 }
 
@@ -101,27 +105,26 @@ public class StockSyncWorkerV2
 
                 if (sourceItems.Count == 0)
                 {
-                    _logger.LogWarning($"Could not fetch source items for Target {rule.RowKey}. Skipping.");
+                    _logger.LogWarning($"Could not fetch source items for Target {targetItemId}. Skipping.");
                     return;
                 }
 
                 // 3. Fetch Target Item
                 // We need the full Target Item to know its variants.
-                // Rule.RowKey is TargetItemId (or UPID?). 
-                // Refactoring said "RowKey: TargetItemId".
-                string targetItemId = rule.RowKey;
-                if (!targetItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
+                // rule.TargetItemId (previously RowKey)
+                string finalTargetItemId = targetItemId;
+                if (!finalTargetItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
                 {
-                     var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId), targetItemId);
-                     if (!string.IsNullOrWhiteSpace(resolvedId)) targetItemId = resolvedId;
+                     var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId), finalTargetItemId);
+                     if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
                 }
 
-                var targetItems = await _meliClient.GetItemsAsync(new[] { targetItemId });
+                var targetItems = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });
                 var targetItem = targetItems?.FirstOrDefault();
 
                 if (targetItem == null)
                 {
-                    _logger.LogWarning($"Could not fetch Target Item {rule.RowKey}. Skipping.");
+                    _logger.LogWarning($"Could not fetch Target Item {targetItemId}. Skipping.");
                     return;
                 }
 
@@ -146,7 +149,7 @@ public class StockSyncWorkerV2
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error processing rule for target {rule.RowKey}");
+                _logger.LogError(ex, $"Error processing rule for target {rule.TargetItemId}");
             }
         });
 

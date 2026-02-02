@@ -1,5 +1,4 @@
 using System.Net;
-using System.Text.Json;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Services;
@@ -27,21 +26,7 @@ public class StockRulesApi
         try
         {
             var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
-            var rules = await _service.GetRulesBySellerAsync(sellerId);
-
-            var dtos = rules.Select(r => new StockRuleDto
-            {
-                TargetItemId = r.RowKey,
-                TargetTitle = r.TargetTitle,
-                TargetThumbnail = r.TargetThumbnail,
-                RuleType = r.RuleType,
-                Components = !string.IsNullOrEmpty(r.ComponentsJson)
-                    ? JsonSerializer.Deserialize<List<RuleComponentDto>>(r.ComponentsJson) ?? []
-                    : [],
-                Mappings = !string.IsNullOrEmpty(r.MappingJson)
-                    ? JsonSerializer.Deserialize<List<VariantMappingDto>>(r.MappingJson) ?? []
-                    : []
-            }).ToList();
+            var dtos = await _service.GetRulesBySellerAsync(sellerId);
 
             var response = req.CreateResponse(HttpStatusCode.OK);
             await response.WriteAsJsonAsync(dtos);
@@ -68,21 +53,7 @@ public class StockRulesApi
                 return req.CreateResponse(HttpStatusCode.BadRequest);
             }
 
-            var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
-
-            var entity = new StockRuleEntity
-            {
-                PartitionKey = sellerId,
-                RowKey = ruleDto.TargetItemId,
-                RuleType = ruleDto.RuleType,
-                ComponentsJson = JsonSerializer.Serialize(ruleDto.Components),
-                MappingJson = JsonSerializer.Serialize(ruleDto.Mappings),
-                TargetItemId = ruleDto.TargetItemId,
-                TargetTitle = ruleDto.TargetTitle,
-                TargetThumbnail = ruleDto.TargetThumbnail
-            };
-
-            await _service.SaveRuleAsync(entity);
+            await _service.SaveRuleAsync(ruleDto);
 
             return req.CreateResponse(HttpStatusCode.OK);
         }

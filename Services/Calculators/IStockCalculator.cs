@@ -7,5 +7,5 @@ public record VariantStockUpdate(string TargetVariantId, int NewQuantity);
 public interface IStockCalculator
 {
     string RuleType { get; }
-    Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleEntity rule, MeliItem targetItem, List<MeliItem> sourceItems);
+    Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, MeliItem targetItem, List<MeliItem> sourceItems);
 }

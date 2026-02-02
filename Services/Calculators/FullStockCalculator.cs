@@ -6,7 +6,7 @@ public class FullStockCalculator : IStockCalculator
 {
     public string RuleType => "FULL";
 
-    public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleEntity rule, MeliItem targetItem, List<MeliItem> sourceItems)
+    public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, MeliItem targetItem, List<MeliItem> sourceItems)
     {
         var updates = new List<VariantStockUpdate>();
         

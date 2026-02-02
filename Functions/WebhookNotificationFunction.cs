@@ -361,7 +361,8 @@ public class WebhookNotificationFunction
                     continue;
                 }
 
-                var components = JsonSerializer.Deserialize<List<RuleComponentDto>>(rule.ComponentsJson);
+                // rule is now StockRuleDto
+                var components = rule.Components;
                 if (components == null || components.Count == 0) continue;
 
                 int minPotentialQty = int.MaxValue;

@@ -1,5 +1,7 @@
 using Azure;
 using Azure.Data.Tables;
+using System.Text.Json;
+using System.Runtime.Serialization;
 
 namespace meli_znube_integration.Models;
 
@@ -21,11 +23,35 @@ public class StockRuleEntity : ITableEntity
     public string ComponentsJson { get; set; } = "[]"; 
     
     // Serialized logic for variant mapping. e.g., "Black Shirt L" maps to "Combo Black L"
-    public string MappingJson { get; set; } = "{}";
+    public string MappingJson { get; set; } = "[]";
 
     // Target Info (The item being updated)
     public string TargetItemId { get; set; } = default!;
     public string TargetSku { get; set; } = default!;
     public string TargetTitle { get; set; } = default!;
     public string? TargetThumbnail { get; set; }
+
+    [IgnoreDataMember]
+    public List<RuleVariantMapping> Mappings
+    {
+        get => string.IsNullOrEmpty(MappingJson)
+            ? new List<RuleVariantMapping>()
+            : JsonSerializer.Deserialize<List<RuleVariantMapping>>(MappingJson) ?? new List<RuleVariantMapping>();
+        set => MappingJson = JsonSerializer.Serialize(value);
+    }
+}
+
+public class RuleVariantMapping
+{
+    public string TargetVariantId { get; set; } // The ML Variant ID (UserProductId)
+    public string TargetSku { get; set; }
+    public List<RuleSourceMatch> SourceMatches { get; set; } = new();
+}
+
+public class RuleSourceMatch
+{
+    public string SourceItemId { get; set; }
+    public string SourceVariantId { get; set; } // The ML Variant ID
+    public string SourceSku { get; set; }
+    public int Quantity { get; set; } // Override quantity per variant if needed, or inherit from Component
 }

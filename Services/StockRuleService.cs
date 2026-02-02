@@ -19,27 +19,57 @@ public class StockRuleService
         _tableClient.CreateIfNotExists();
     }
 
-    public async Task SaveRuleAsync(StockRuleEntity rule)
+    public async Task SaveRuleAsync(StockRuleDto ruleDto)
     {
+        // Map DTO -> Entity
+        var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+        var entity = new StockRuleEntity
+        {
+            PartitionKey = sellerId,
+            RowKey = ruleDto.TargetItemId,
+            RuleType = ruleDto.RuleType,
+            TargetItemId = ruleDto.TargetItemId,
+            TargetTitle = ruleDto.TargetTitle,
+            TargetThumbnail = ruleDto.TargetThumbnail,
+            TargetSku = ruleDto.TargetSku ?? "",
+            ComponentsJson = JsonSerializer.Serialize(ruleDto.Components),
+            // Mappings are handled by the property setter in Entity which serializes to MappingJson
+        };
+        
+        // Map DTO Mappings -> Entity Mappings
+        // We need to map List<VariantMappingDto> to List<RuleVariantMapping>
+        entity.Mappings = ruleDto.Mappings.Select(m => new RuleVariantMapping
+        {
+            TargetVariantId = m.TargetVariantId,
+            TargetSku = m.TargetSku,
+            SourceMatches = m.SourceMatches.Select(sm => new RuleSourceMatch
+            {
+                SourceItemId = sm.SourceItemId,
+                SourceVariantId = sm.SourceVariantId,
+                SourceSku = sm.SourceSku,
+                Quantity = sm.Quantity
+            }).ToList()
+        }).ToList();
+
         // 1. Check if rule exists to clean up old index
-        var existingRule = await GetRuleAsync(rule.PartitionKey, rule.RowKey);
+        var existingRuleKey = entity.RowKey;
+        var existingRule = await GetRuleEntityAsync(sellerId, existingRuleKey);
         if (existingRule != null)
         {
             await DeleteIndexEntriesAsync(existingRule);
         }
 
         // 2. Upsert the main rule
-        await _tableClient.UpsertEntityAsync(rule, TableUpdateMode.Replace);
+        await _tableClient.UpsertEntityAsync(entity, TableUpdateMode.Replace);
 
         // 3. Insert new index entries
-        var components = JsonSerializer.Deserialize<List<RuleComponentDto>>(rule.ComponentsJson) ?? new List<RuleComponentDto>();
-        foreach (var component in components)
+        foreach (var component in ruleDto.Components)
         {
             var indexEntity = new StockSourceIndexEntity
             {
                 PartitionKey = component.SourceItemId, // Source is PK for Index
-                RowKey = rule.TargetItemId,            // Target is RK for Index
-                RuleType = rule.RuleType,
+                RowKey = entity.TargetItemId,          // Target is RK for Index
+                RuleType = entity.RuleType,
                 Timestamp = DateTimeOffset.UtcNow
             };
             await _tableClient.UpsertEntityAsync(indexEntity, TableUpdateMode.Replace);
@@ -48,7 +78,7 @@ public class StockRuleService
 
     public async Task DeleteRuleAsync(string sellerId, string targetItemId)
     {
-        var rule = await GetRuleAsync(sellerId, targetItemId);
+        var rule = await GetRuleEntityAsync(sellerId, targetItemId);
         if (rule != null)
         {
             // 1. Delete index entries
@@ -59,32 +89,36 @@ public class StockRuleService
         }
     }
 
-    public async Task<List<StockRuleEntity>> GetRulesBySellerAsync(string sellerId)
+    public async Task<List<StockRuleDto>> GetRulesBySellerAsync(string sellerId)
     {
-        var rules = new List<StockRuleEntity>();
+        var rules = new List<StockRuleDto>();
         var query = _tableClient.QueryAsync<StockRuleEntity>(filter: $"PartitionKey eq '{sellerId}'");
 
         await foreach (var rule in query)
         {
-            rules.Add(rule);
+            rules.Add(MapToDto(rule));
         }
 
         return rules;
     }
 
-    public async Task<List<StockRuleEntity>> GetAllRulesAsync()
+    public async Task<List<StockRuleDto>> GetAllRulesAsync()
     {
-        var rules = new List<StockRuleEntity>();
+        var rules = new List<StockRuleDto>();
         var query = _tableClient.QueryAsync<StockRuleEntity>();
 
         await foreach (var rule in query)
         {
-            rules.Add(rule);
+            rules.Add(MapToDto(rule));
         }
 
         return rules;
     }
 
+    // Only used internally or by advanced indexers if needed. 
+    // If public consumers need DTOs, usage of this method in WebhookNotificationFunction needs to be checked.
+    // However, WebhookNotificationFunction uses GetAffectedRulesBySourceAsync which returns StockSourceIndexEntity.
+    // StockSourceIndexEntity is a lightweight pointer, so it is fine to return Entity.
     public async Task<List<StockSourceIndexEntity>> GetAffectedRulesBySourceAsync(string sourceItemId)
     {
         var indexes = new List<StockSourceIndexEntity>();
@@ -98,7 +132,14 @@ public class StockRuleService
         return indexes;
     }
 
-    public async Task<StockRuleEntity?> GetRuleAsync(string sellerId, string targetItemId)
+    public async Task<StockRuleDto?> GetRuleAsync(string sellerId, string targetItemId)
+    {
+        var entity = await GetRuleEntityAsync(sellerId, targetItemId);
+        return entity == null ? null : MapToDto(entity);
+    }
+    
+    // Internal helper to get raw entity
+    private async Task<StockRuleEntity?> GetRuleEntityAsync(string sellerId, string targetItemId)
     {
         try
         {
@@ -131,5 +172,32 @@ public class StockRuleService
         {
             // Ignore deserialization errors or missing components during cleanup
         }
+    }
+
+    private StockRuleDto MapToDto(StockRuleEntity entity)
+    {
+        return new StockRuleDto
+        {
+            TargetItemId = entity.TargetItemId,
+            TargetTitle = entity.TargetTitle,
+            TargetThumbnail = entity.TargetThumbnail,
+            TargetSku = entity.TargetSku,
+            RuleType = entity.RuleType,
+            Components = string.IsNullOrEmpty(entity.ComponentsJson) 
+                ? new List<RuleComponentDto>() 
+                : JsonSerializer.Deserialize<List<RuleComponentDto>>(entity.ComponentsJson) ?? new List<RuleComponentDto>(),
+            Mappings = entity.Mappings.Select(m => new VariantMappingDto
+            {
+                TargetVariantId = m.TargetVariantId,
+                TargetSku = m.TargetSku,
+                SourceMatches = m.SourceMatches.Select(sm => new RuleSourceMatchDto
+                {
+                    SourceItemId = sm.SourceItemId,
+                    SourceVariantId = sm.SourceVariantId,
+                    SourceSku = sm.SourceSku,
+                    Quantity = sm.Quantity
+                }).ToList()
+            }).ToList()
+        };
     }
 }
