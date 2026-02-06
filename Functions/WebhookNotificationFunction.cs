@@ -9,6 +9,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using meli_znube_integration.Services.Calculators;
 
 namespace meli_znube_integration.Functions;
 
@@ -18,6 +19,7 @@ public class WebhookNotificationFunction
     private readonly MeliClient _meliClient;
     private readonly StockMappingService _stockMappingService;
     private readonly StockRuleService _stockRuleService;
+    private readonly StockCalculatorFactory _calculatorFactory;
     private readonly ILogger<WebhookNotificationFunction> _logger;
     private readonly IConfiguration _configuration;
 
@@ -26,6 +28,7 @@ public class WebhookNotificationFunction
         MeliClient meliClient,
         StockMappingService stockMappingService,
         StockRuleService stockRuleService,
+        StockCalculatorFactory calculatorFactory,
         ILogger<WebhookNotificationFunction> logger,
         IConfiguration configuration)
     {
@@ -33,6 +36,7 @@ public class WebhookNotificationFunction
         _meliClient = meliClient;
         _stockMappingService = stockMappingService;
         _stockRuleService = stockRuleService;
+        _calculatorFactory = calculatorFactory;
         _logger = logger;
         _configuration = configuration;
     }
@@ -327,19 +331,11 @@ public class WebhookNotificationFunction
         }
 
         // Step 2: Lookup Affected Rules (Reverse Index)
-        // Note: The index returns StockSourceIndexEntity, which has RuleType but not the full rule definition.
-        // We need the full rule definition to get the list of components.
-        // So we need to fetch the Rule Entity using the Index info.
-        // Index: PK=Source, RK=Target.
-        // Rule: PK=SellerId, RK=Target.
-        // We need SellerId. We can get it from EnvVars.
-        
         var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
         var affectedIndexes = await _stockRuleService.GetAffectedRulesBySourceAsync(sourceItemId);
 
         if (affectedIndexes == null || affectedIndexes.Count == 0)
         {
-            // No rules affected by this source.
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
@@ -352,7 +348,7 @@ public class WebhookNotificationFunction
 
             try 
             {
-                // Fetch Full Rule Definition using efficient lookup
+                // Fetch Full Rule Definition
                 var rule = await _stockRuleService.GetRuleAsync(sellerId, targetItemId);
 
                 if (rule == null)
@@ -365,39 +361,64 @@ public class WebhookNotificationFunction
                 var components = rule.Components;
                 if (components == null || components.Count == 0) continue;
 
-                int minPotentialQty = int.MaxValue;
-                bool canCalculate = true;
-
-                foreach (var component in components)
+                // PREPARE DATA FOR CALCULATOR
+                // 1. Fetch Source Items (Full MeliItem objects needed for Calculator)
+                var sourceItems = new List<MeliItem>();
+                foreach (var comp in components)
                 {
-                    // Optimization: If component is the source that triggered this, we could use the quantity from the notification?
-                    // But the notification might not have quantity.
-                    // So we fetch stock.
-                    var compStock = await _meliClient.GetUserProductStockAsync(component.SourceItemId);
-                    if (compStock == null)
+                    string itemId = comp.SourceItemId;
+                    if (!itemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase)) 
                     {
-                        canCalculate = false;
-                        break;
+                        var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(sellerId, comp.SourceItemId);
+                        if (!string.IsNullOrWhiteSpace(resolvedId)) itemId = resolvedId;
                     }
 
-                    int componentQty = component.Quantity > 0 ? component.Quantity : 1;
-                    int possibleQty = (int)Math.Floor((double)compStock.Value.Quantity / componentQty);
-
-                    if (possibleQty < minPotentialQty) minPotentialQty = possibleQty;
+                    if (!string.IsNullOrWhiteSpace(itemId))
+                    {
+                        var items = await _meliClient.GetItemsAsync(new[] { itemId });
+                        if (items != null && items.Count > 0) sourceItems.AddRange(items);
+                    }
                 }
 
-                if (!canCalculate) continue;
-
-                int targetQty = minPotentialQty;
-                if (targetQty == int.MaxValue) targetQty = 0;
-
-                var targetStock = await _meliClient.GetUserProductStockAsync(targetItemId);
-                if (targetStock == null) continue;
-
-                if (targetStock.Value.Quantity != targetQty)
+                if (sourceItems.Count == 0)
                 {
-                    _logger.LogInformation("V2: Updating Target {TargetId}: {OldQty} -> {NewQty}", targetItemId, targetStock.Value.Quantity, targetQty);
-                    await _meliClient.UpdateUserProductStockAsync(targetItemId, targetQty, targetStock.Value.Version);
+                    _logger.LogWarning("V2: Could not fetch source items for Target {TargetId}.", targetItemId);
+                    continue;
+                }
+
+                // 2. Fetch Target Item
+                string finalTargetItemId = targetItemId;
+                if (!finalTargetItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
+                {
+                        var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(sellerId, finalTargetItemId);
+                        if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
+                }
+
+                var targetItemsToCheck = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });
+                var targetItem = targetItemsToCheck?.FirstOrDefault();
+
+                if (targetItem == null)
+                {
+                    _logger.LogWarning("V2: Could not fetch Target Item {TargetId}.", targetItemId);
+                    continue;
+                }
+
+                // CALCULATE
+                var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
+                var updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
+
+                // UPDATE
+                foreach (var update in updates)
+                {
+                    var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
+                    if (currentStock != null)
+                    {
+                        if (currentStock.Value.Quantity != update.NewQuantity)
+                        {
+                            _logger.LogInformation("V2: Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
+                            await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version);
+                        }
+                    }
                 }
             }
             catch (Exception ex)
