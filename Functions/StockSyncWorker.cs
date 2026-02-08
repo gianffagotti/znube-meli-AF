@@ -12,10 +12,10 @@ namespace meli_znube_integration.Functions;
 public class StockSyncWorker
 {
     private readonly ILogger<StockSyncWorker> _logger;
-    private readonly MeliClient _meliClient;
+    private readonly IMeliApiClient _meliClient;
     private readonly IConfiguration _configuration;
 
-    public StockSyncWorker(ILogger<StockSyncWorker> logger, MeliClient meliClient, IConfiguration configuration)
+    public StockSyncWorker(ILogger<StockSyncWorker> logger, IMeliApiClient meliClient, IConfiguration configuration)
     {
         _logger = logger;
         _meliClient = meliClient;

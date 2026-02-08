@@ -2,6 +2,11 @@ using meli_znube_integration.Models;
 
 namespace meli_znube_integration.Services.Calculators;
 
+/// <summary>
+/// Calculates stock for COMBO rules. Prefers per-variant Mappings (SourceMatches with SourceVariantId/SourceSku).
+/// Fallback: when no mapping exists, Components are used only when each component's SourceItemId (ItemId MLA...)
+/// refers to an item with exactly one variation; otherwise the fallback is not applied (multi-variant items require Mappings).
+/// </summary>
 public class ComboStockCalculator : IStockCalculator
 {
     public string RuleType => "COMBO";
@@ -52,20 +57,38 @@ public class ComboStockCalculator : IStockCalculator
                 }
             }
 
-            // Fallback: Global Components if no specific mapping found (or if mapping list is empty/null which implies global rule)
-            if (!hasSpecificMapping)
+            // Fallback: Global Components only when each component is an item with exactly one variation.
+            // RuleComponentDto.SourceItemId is ItemId (MLA...), not UserProductId. Using it as SourceVariantId
+            // would fail when the item has multiple variants. So we resolve ItemId → single variant when possible.
+            if (!hasSpecificMapping && rule.Components != null && rule.Components.Count > 0)
             {
-                // Convert Global Components to SourceMatches for uniform processing
-                // Note: RuleComponentDto has SourceItemId and Quantity.
-                // We assume RuleComponentDto.SourceItemId is the VariantId (UserProductId) in this context.
-                if (rule.Components != null)
+                var fallbackMatches = new List<RuleSourceMatchDto>();
+                bool canUseFallback = true;
+                foreach (var c in rule.Components)
                 {
-                    neededIngredientsSourceMatches = rule.Components.Select(c => new RuleSourceMatchDto
+                    var sourceItem = sourceItems.FirstOrDefault(s => string.Equals(s.Id, c.SourceItemId, StringComparison.OrdinalIgnoreCase));
+                    if (sourceItem == null)
                     {
-                        SourceVariantId = c.SourceItemId, // Assuming SourceItemId is the ID we look for
+                        canUseFallback = false;
+                        break;
+                    }
+                    var variations = sourceItem.Variations ?? new List<MeliVariation>();
+                    if (variations.Count != 1)
+                    {
+                        // Item has 0 or multiple variants: cannot use Components fallback; Mappings required.
+                        canUseFallback = false;
+                        break;
+                    }
+                    var singleVar = variations[0];
+                    fallbackMatches.Add(new RuleSourceMatchDto
+                    {
+                        SourceItemId = sourceItem.Id ?? c.SourceItemId,
+                        SourceVariantId = !string.IsNullOrWhiteSpace(singleVar.UserProductId) ? singleVar.UserProductId : singleVar.Id.ToString(),
                         Quantity = c.Quantity
-                    }).ToList();
+                    });
                 }
+                if (canUseFallback && fallbackMatches.Count > 0)
+                    neededIngredientsSourceMatches = fallbackMatches;
             }
 
             if (neededIngredientsSourceMatches == null || neededIngredientsSourceMatches.Count == 0) continue;

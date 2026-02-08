@@ -36,8 +36,9 @@ var host = Host.CreateDefaultBuilder(args)
 
         services.AddSingleton<TokensStoreBlob>();
         services.AddSingleton<MeliAuth>();
-        services.AddScoped<MeliClient>();
-        services.AddScoped<ZnubeClient>();
+        services.AddScoped<IMeliApiClient, MeliApiClient>();
+        services.AddScoped<IZnubeApiClient, ZnubeApiClient>();
+        services.AddScoped<IZnubeAllocationService, ZnubeAllocationService>();
         services.AddScoped<NoteService>();
         services.AddSingleton<PackLockStoreBlob>();
         services.AddScoped<PackProcessor>();

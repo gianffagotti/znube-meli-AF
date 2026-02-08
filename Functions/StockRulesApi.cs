@@ -41,6 +41,9 @@ public class StockRulesApi
         }
     }
 
+    private static readonly HashSet<string> ValidRuleTypes = new(StringComparer.OrdinalIgnoreCase)
+        { "FULL", "PACK", "COMBO" };
+
     [Function("UpsertStockRule")]
     public async Task<HttpResponseData> UpsertRule(
         [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "rules")] HttpRequestData req)
@@ -51,6 +54,15 @@ public class StockRulesApi
             if (ruleDto == null || string.IsNullOrWhiteSpace(ruleDto.TargetItemId))
             {
                 return req.CreateResponse(HttpStatusCode.BadRequest);
+            }
+
+            var ruleType = (ruleDto.RuleType ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(ruleType) || !ValidRuleTypes.Contains(ruleType))
+            {
+                _logger.LogWarning("UpsertStockRule: ruleType inválido '{RuleType}'. Valores permitidos: FULL, PACK, COMBO.", ruleDto.RuleType);
+                var badResponse = req.CreateResponse(HttpStatusCode.BadRequest);
+                await badResponse.WriteAsJsonAsync(new { message = "ruleType must be one of: FULL, PACK, COMBO." });
+                return badResponse;
             }
 
             await _service.SaveRuleAsync(ruleDto);

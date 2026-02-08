@@ -1,6 +1,7 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
@@ -11,11 +12,10 @@ namespace meli_znube_integration.Functions;
 public class StockMappingIndexer
 {
     private readonly ILogger<StockMappingIndexer> _logger;
-    private readonly MeliClient _meliClient;
+    private readonly IMeliApiClient _meliClient;
     private readonly StockMappingService _stockMappingService;
 
-
-    public StockMappingIndexer(ILogger<StockMappingIndexer> logger, MeliClient meliClient, StockMappingService stockMappingService)
+    public StockMappingIndexer(ILogger<StockMappingIndexer> logger, IMeliApiClient meliClient, StockMappingService stockMappingService)
     {
         _logger = logger;
         _meliClient = meliClient;
@@ -53,10 +53,10 @@ public class StockMappingIndexer
 
             while (hasMore)
             {
-                MeliScanResponse? scanResult = null;
+                MeliScanResponseDto? scanResult = null;
                 try
                 {
-                    scanResult = await _meliClient.ScanItemsAsync(userId, scrollId);
+                    scanResult = await _meliClient.ScanItemsAsync(long.Parse(userId), scrollId);
                 }
                 catch (Exception ex)
                 {
@@ -65,7 +65,7 @@ public class StockMappingIndexer
                     break;
                 }
 
-                if (scanResult == null || scanResult.Results == null || scanResult.Results.Count == 0)
+                if (scanResult?.Results == null || scanResult.Results.Count == 0)
                 {
                     hasMore = false;
                     break;

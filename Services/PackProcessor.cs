@@ -8,7 +8,7 @@ namespace meli_znube_integration.Services;
 public class PackProcessor
 {
     private readonly MeliAuth _auth;
-    private readonly MeliClient _meli;
+    private readonly IMeliApiClient _meli;
     private readonly NoteService _noteService;
     private readonly PackLockStoreBlob _lockStore;
     private readonly ILogger<PackProcessor> _logger;
@@ -16,7 +16,7 @@ public class PackProcessor
     private static readonly bool SendBuyerMessageEnabled = EnvVars.GetBool(EnvVars.Keys.SendBuyerMessage, true);
     private static readonly bool UpsertOrderNoteEnabled = EnvVars.GetBool(EnvVars.Keys.UpsertOrderNote, true);
 
-    public PackProcessor(MeliAuth auth, MeliClient meli, NoteService noteService, PackLockStoreBlob lockStore, ILogger<PackProcessor> logger)
+    public PackProcessor(MeliAuth auth, IMeliApiClient meli, NoteService noteService, PackLockStoreBlob lockStore, ILogger<PackProcessor> logger)
     {
         _auth = auth;
         _meli = meli;
@@ -27,42 +27,30 @@ public class PackProcessor
 
     public async Task<(string? OrderIdWritten, string? NoteText)> ProcessAsync(string orderIdFromWebhook)
     {
-        var order = await _meli.GetOrderAsync(orderIdFromWebhook);
+        var orderDto = await _meli.GetOrderAsync(orderIdFromWebhook);
+        var order = orderDto?.ToOrder();
         if (order == null || order.DateCreatedUtc < DateTime.UtcNow.AddHours(-24))
-        {
             return (null, null);
-        }
 
-        // Flujo individual si no tiene pack
         if (string.IsNullOrWhiteSpace(order.PackId))
         {
-            // idempotencia: si ya hay [AUTO], cortar
-            if (await _meli.HasAutoNoteAsync(orderIdFromWebhook))
-            {
+            var notes = await _meli.GetOrderNotesAsync(orderIdFromWebhook);
+            if (NoteUtils.ContainsAutoNote(notes))
                 return (orderIdFromWebhook, null);
-            }
 
             var body = await _noteService.BuildSingleOrderBodyAsync(order);
             if (string.IsNullOrWhiteSpace(body))
-            {
                 return (orderIdFromWebhook, null);
-            }
             var final = _noteService.BuildFinalNote(body);
             var upserted = false;
             if (UpsertOrderNoteEnabled)
-            {
-                upserted = await _meli.UpsertOrderNoteAsync(orderIdFromWebhook, final);
-            }
+                upserted = await _meli.CreateOrderNoteAsync(orderIdFromWebhook, final);
             try
             {
-                if (upserted)
+                if (upserted && SendBuyerMessageEnabled)
                 {
-                    if (SendBuyerMessageEnabled)
-                    {
-                        var buyerNameUpper = BuildBuyerNameUpper(new[] { order });
-                        var text = BuildActionGuideMessage(buyerNameUpper);
-                        await _meli.SendActionGuideMessageAsync(orderIdFromWebhook, text);
-                    }
+                    var buyerNameUpper = BuildBuyerNameUpper(new[] { order });
+                    await _meli.SendMessageAsync(orderIdFromWebhook, BuildActionGuideMessage(buyerNameUpper));
                 }
             }
             catch (Exception ex)
@@ -72,7 +60,6 @@ public class PackProcessor
             return (orderIdFromWebhook, final);
         }
 
-        // Flujo pack
         var packId = order.PackId!;
         var (acquired, blob) = await _lockStore.TryAcquireAsync(packId);
         if (!acquired)
@@ -83,49 +70,35 @@ public class PackProcessor
 
         try
         {
-            var orders = await _meli.GetOrdersByPackAsync(packId);
-            if (orders.Count == 0)
-            {
+            var orderDtos = await _meli.GetPackOrdersAsync(packId);
+            if (orderDtos.Count == 0)
                 return (null, null);
-            }
-
-            var last = orders
-                .Last();
+            var orders = orderDtos.Select(d => d.ToOrder()).ToList();
+            var last = orders.Last();
 
             var body = await _noteService.BuildConsolidatedBodyAsync(orders);
             if (string.IsNullOrWhiteSpace(body))
-            {
                 return (null, null);
-            }
             var final = _noteService.BuildFinalNote(body);
 
-            if (!string.IsNullOrWhiteSpace(last.Id))
+            if (string.IsNullOrWhiteSpace(last.Id))
+                return (null, null);
+            var upserted = false;
+            if (UpsertOrderNoteEnabled)
+                upserted = await _meli.CreateOrderNoteAsync(last.Id!, final);
+            try
             {
-                var upserted = false;
-                if (UpsertOrderNoteEnabled)
+                if (upserted && SendBuyerMessageEnabled)
                 {
-                    upserted = await _meli.UpsertOrderNoteAsync(last.Id!, final);
+                    var buyerNameUpper = BuildBuyerNameUpper(orders);
+                    await _meli.SendMessageAsync(packId, BuildActionGuideMessage(buyerNameUpper));
                 }
-                try
-                {
-                    if (upserted)
-                    {
-                        if (SendBuyerMessageEnabled)
-                        {
-                            var buyerNameUpper = BuildBuyerNameUpper(orders);
-                            var text = BuildActionGuideMessage(buyerNameUpper);
-                            await _meli.SendActionGuideMessageAsync(packId, text);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para pack {PackId}", packId);
-                }
-
-                return (last.Id, final);
             }
-            return (null, null);
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para pack {PackId}", packId);
+            }
+            return (last.Id, final);
         }
         finally
         {

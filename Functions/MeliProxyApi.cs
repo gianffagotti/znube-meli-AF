@@ -1,8 +1,10 @@
 using System.Net;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Dtos;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
@@ -11,10 +13,10 @@ namespace meli_znube_integration.Functions;
 
 public class MeliProxyApi
 {
-    private readonly MeliClient _meliClient;
+    private readonly IMeliApiClient _meliClient;
     private readonly ILogger<MeliProxyApi> _logger;
 
-    public MeliProxyApi(MeliClient meliClient, ILogger<MeliProxyApi> logger)
+    public MeliProxyApi(IMeliApiClient meliClient, ILogger<MeliProxyApi> logger)
     {
         _meliClient = meliClient;
         _logger = logger;
@@ -34,11 +36,28 @@ public class MeliProxyApi
                 return req.CreateResponse(HttpStatusCode.BadRequest);
             }
 
-            var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
-            
-            // 1. Search for IDs
-            var ids = await _meliClient.SearchItemsGeneralAsync(sellerId, query);
-            
+            var sellerIdStr = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+            var sellerId = long.Parse(sellerIdStr);
+            var cleanQuery = query.Trim();
+
+            // Service-layer logic: if MLA item ID, return it
+            if (Regex.IsMatch(cleanQuery, @"^MLA\d+$", RegexOptions.IgnoreCase))
+            {
+                var single = await _meliClient.GetItemsAsync([cleanQuery.ToUpperInvariant()]);
+                var dto = single?.FirstOrDefault();
+                var response = req.CreateResponse(HttpStatusCode.OK);
+                await response.WriteAsJsonAsync(dto != null ? new List<MeliProxyItemDto> { MapToDto(dto) } : new List<MeliProxyItemDto>());
+                return response;
+            }
+
+            var qSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { Query = cleanQuery });
+            var skuSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { SellerSku = cleanQuery });
+            var ids = (qSearch?.Results?.Select(r => r.Id).Where(id => !string.IsNullOrWhiteSpace(id)) ?? Array.Empty<string?>())
+                .Concat(skuSearch?.Results?.Select(r => r.Id).Where(id => !string.IsNullOrWhiteSpace(id)) ?? Array.Empty<string?>())
+                .Distinct()
+                .Cast<string>()
+                .ToList();
+
             if (ids.Count == 0)
             {
                 var empty = req.CreateResponse(HttpStatusCode.OK);
@@ -46,13 +65,12 @@ public class MeliProxyApi
                 return empty;
             }
 
-            // 2. Get Details
             var items = await _meliClient.GetItemsAsync(ids);
             var dtos = items.Select(MapToDto).ToList();
 
-            var response = req.CreateResponse(HttpStatusCode.OK);
-            await response.WriteAsJsonAsync(dtos);
-            return response;
+            var response2 = req.CreateResponse(HttpStatusCode.OK);
+            await response2.WriteAsJsonAsync(dtos);
+            return response2;
         }
         catch (Exception ex)
         {

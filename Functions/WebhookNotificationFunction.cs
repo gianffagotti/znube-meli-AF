@@ -1,22 +1,23 @@
-using meli_znube_integration.Services;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Dtos;
+using meli_znube_integration.Services;
+using meli_znube_integration.Services.Calculators;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Configuration;
-using meli_znube_integration.Services.Calculators;
 
 namespace meli_znube_integration.Functions;
 
 public class WebhookNotificationFunction
 {
     private readonly PackProcessor _processor;
-    private readonly MeliClient _meliClient;
+    private readonly IMeliApiClient _meliClient;
     private readonly StockMappingService _stockMappingService;
     private readonly StockRuleService _stockRuleService;
     private readonly StockCalculatorFactory _calculatorFactory;
@@ -25,7 +26,7 @@ public class WebhookNotificationFunction
 
     public WebhookNotificationFunction(
         PackProcessor processor,
-        MeliClient meliClient,
+        IMeliApiClient meliClient,
         StockMappingService stockMappingService,
         StockRuleService stockRuleService,
         StockCalculatorFactory calculatorFactory,
@@ -118,7 +119,8 @@ public class WebhookNotificationFunction
         }
 
         // 1. Parent Discovery
-        var itemId = await _meliClient.SearchItemByUserProductIdAsync(userId, userProductId);
+        var search = await _meliClient.SearchItemsAsync(long.Parse(userId), new MeliItemSearchQuery { UserProductId = userProductId });
+        var itemId = search?.Results?.FirstOrDefault()?.Id;
         if (string.IsNullOrWhiteSpace(itemId))
         {
             _logger.LogInformation("No se encontró Item ID para user_product_id: {UserProductId}. Ignorando.", userProductId);
@@ -177,7 +179,8 @@ public class WebhookNotificationFunction
         if (string.IsNullOrWhiteSpace(targetUserProductId))
         {
             // Slow Path
-            var targetItemId = await _meliClient.SearchItemBySkuAsync(userId, sku!);
+            var skuSearch = await _meliClient.SearchItemsAsync(long.Parse(userId), new MeliItemSearchQuery { SellerSku = sku! });
+            var targetItemId = skuSearch?.Results?.FirstOrDefault()?.Id;
             if (!string.IsNullOrWhiteSpace(targetItemId))
             {
                  var targetItems = await _meliClient.GetItemsAsync([targetItemId!]);
@@ -322,16 +325,35 @@ public class WebhookNotificationFunction
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        // Step 1: Parse Resource (Source Item)
-        var sourceItemId = ExtractUserProductId(resource);
-        if (string.IsNullOrWhiteSpace(sourceItemId))
+        // Step 1: Parse Resource — webhook sends user_product_id (variant), not item_id (MLA...)
+        var userProductId = ExtractUserProductId(resource);
+        if (string.IsNullOrWhiteSpace(userProductId))
         {
             _logger.LogWarning("V2: No se pudo extraer user_product_id de: {Resource}", resource);
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        // Step 2: Lookup Affected Rules (Reverse Index)
+        // Step 2: Resolve UserProductId → ItemId (index is keyed by ItemId, not by variant UserProductId)
         var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+        string? sourceItemId = null;
+        try
+        {
+            var search = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = userProductId });
+            sourceItemId = search?.Results?.FirstOrDefault()?.Id;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "V2: No se pudo resolver UserProductId {UserProductId} a ItemId.", userProductId);
+            return req.CreateResponse(HttpStatusCode.OK);
+        }
+
+        if (string.IsNullOrWhiteSpace(sourceItemId))
+        {
+            _logger.LogDebug("V2: UserProductId {UserProductId} no resolvió a ningún ItemId (ítem eliminado o inaccesible).", userProductId);
+            return req.CreateResponse(HttpStatusCode.OK);
+        }
+
+        // Step 3: Lookup Affected Rules (Reverse Index — PartitionKey = sourceItemId = ItemId)
         var affectedIndexes = await _stockRuleService.GetAffectedRulesBySourceAsync(sourceItemId);
 
         if (affectedIndexes == null || affectedIndexes.Count == 0)
@@ -339,9 +361,9 @@ public class WebhookNotificationFunction
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        _logger.LogInformation("V2: Source {SourceId} affects {Count} rules.", sourceItemId, affectedIndexes.Count);
+        _logger.LogInformation("V2: Source UserProductId {UserProductId} → ItemId {ItemId} affects {Count} rules.", userProductId, sourceItemId, affectedIndexes.Count);
 
-        // Step 3: Iterate & Update Targets
+        // Step 4: Iterate & Update Targets
         foreach (var index in affectedIndexes)
         {
             var targetItemId = index.RowKey; // Target is RK in Index
@@ -369,7 +391,8 @@ public class WebhookNotificationFunction
                     string itemId = comp.SourceItemId;
                     if (!itemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase)) 
                     {
-                        var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(sellerId, comp.SourceItemId);
+                        var upSearch = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = comp.SourceItemId });
+                        var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
                         if (!string.IsNullOrWhiteSpace(resolvedId)) itemId = resolvedId;
                     }
 
@@ -390,7 +413,8 @@ public class WebhookNotificationFunction
                 string finalTargetItemId = targetItemId;
                 if (!finalTargetItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
                 {
-                        var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(sellerId, finalTargetItemId);
+                        var upSearch = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = finalTargetItemId });
+                        var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
                         if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
                 }
 

@@ -1,6 +1,7 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
 using meli_znube_integration.Services.Calculators;
 using Microsoft.Azure.Functions.Worker;
@@ -12,13 +13,13 @@ namespace meli_znube_integration.Functions;
 public class StockSyncWorkerV2
 {
     private readonly StockRuleService _stockRuleService;
-    private readonly MeliClient _meliClient;
+    private readonly IMeliApiClient _meliClient;
     private readonly StockCalculatorFactory _calculatorFactory;
     private readonly ILogger<StockSyncWorkerV2> _logger;
 
     public StockSyncWorkerV2(
-        StockRuleService stockRuleService, 
-        MeliClient meliClient, 
+        StockRuleService stockRuleService,
+        IMeliApiClient meliClient,
         StockCalculatorFactory calculatorFactory,
         ILogger<StockSyncWorkerV2> logger)
     {
@@ -91,8 +92,9 @@ public class StockSyncWorkerV2
                     string itemId = comp.SourceItemId;
                     if (!itemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase)) // Heuristic
                     {
-                        // It's likely a UserProductId, try to resolve ItemID
-                        var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId), comp.SourceItemId);
+                        var sellerId = long.Parse(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId));
+                        var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = comp.SourceItemId });
+                        var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
                         if (!string.IsNullOrWhiteSpace(resolvedId)) itemId = resolvedId;
                     }
 
@@ -115,8 +117,10 @@ public class StockSyncWorkerV2
                 string finalTargetItemId = targetItemId;
                 if (!finalTargetItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
                 {
-                     var resolvedId = await _meliClient.SearchItemByUserProductIdAsync(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId), finalTargetItemId);
-                     if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
+                    var sellerId = long.Parse(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId));
+                    var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = finalTargetItemId });
+                    var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
+                    if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
                 }
 
                 var targetItems = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });

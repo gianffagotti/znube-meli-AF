@@ -1,5 +1,7 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
+using meli_znube_integration.Models;
+using meli_znube_integration.Models.Dtos;
 
 namespace meli_znube_integration.Services;
 
@@ -9,13 +11,13 @@ public class NoteService
     private const string Other24hTag = "(TOC)";
     private const int MaxDetailedProducts = 9;
 
-    private readonly MeliClient _meliClient;
-    private readonly ZnubeClient _znubeClient;
+    private readonly IMeliApiClient _meliApiClient;
+    private readonly IZnubeAllocationService _znubeAllocationService;
 
-    public NoteService(MeliClient meliClient, ZnubeClient znubeClient)
+    public NoteService(IMeliApiClient meliApiClient, IZnubeAllocationService znubeAllocationService)
     {
-        _meliClient = meliClient;
-        _znubeClient = znubeClient;
+        _meliApiClient = meliApiClient;
+        _znubeAllocationService = znubeAllocationService;
     }
 
     public async Task<string?> BuildSingleOrderBodyAsync(MeliOrder order)
@@ -23,29 +25,25 @@ public class NoteService
         string? zone = null;
         try
         {
-            var shipment = await _meliClient.GetShipmentInfoAsync(order);
-            if (shipment != null)
+            if (!string.IsNullOrWhiteSpace(order.ShippingId))
             {
-                if (shipment.IsFull)
+                var shipment = await _meliApiClient.GetShipmentAsync(order.ShippingId);
+                if (shipment != null)
                 {
-                    return null; // mantener comportamiento: si es FULL, se omite
-                }
-                if (shipment.IsFlex)
-                {
-                    zone = shipment.Zone;
+                    if (shipment.IsFull())
+                        return null;
+                    if (shipment.IsFlex())
+                        zone = shipment.GetZone();
                 }
             }
         }
         catch { }
 
-        var allocations = await _znubeClient.GetAllocationsForOrderAsync(order);
+        var allocations = await _znubeAllocationService.GetAllocationsForOrderAsync(order);
         var lines = BuildGroupedLines(allocations);
         if (!string.IsNullOrWhiteSpace(zone))
-        {
             lines.Add($"({zone})");
-        }
 
-        // Chequeo 24h: ¿el comprador hizo otra compra en las últimas 24 horas?
         try
         {
             var sellerId = EnvVars.GetString(EnvVars.Keys.MeliSellerId);
@@ -55,16 +53,13 @@ public class NoteService
             {
                 var to = order.DateCreatedUtc.Value;
                 var from = to.AddHours(-24);
-                var hasOther = await _meliClient.HasTwoOrMoreOrdersByBuyerAsync(from, to, order.BuyerNickname!, sellerId!);
+                var hasOther = await HasTwoOrMoreOrdersByBuyerAsync(from, to, order.BuyerNickname!, long.Parse(sellerId!));
                 if (hasOther)
-                {
                     lines.Add(Other24hTag);
-                }
             }
         }
         catch { }
-        var body = string.Join("\n", lines);
-        return body;
+        return string.Join("\n", lines);
     }
 
     public async Task<string?> BuildConsolidatedBodyAsync(IEnumerable<MeliOrder> orders)
@@ -72,34 +67,31 @@ public class NoteService
         var orderList = orders?.Where(o => o != null).ToList() ?? [];
         if (orderList.Count == 0) return null;
 
-        // Última orden por fecha o id
         var last = orderList
             .OrderBy(o => o.DateCreatedUtc ?? DateTimeOffset.MinValue)
             .ThenBy(o => NoteUtils.TryParseLong(o.Id))
             .Last();
 
-        // Reglas de envío aplicadas a última orden
         string? zone = null;
         try
         {
-            var shipment = await _meliClient.GetShipmentInfoAsync(last);
-            if (shipment != null)
+            if (!string.IsNullOrWhiteSpace(last.ShippingId))
             {
-                if (shipment.IsFull) return null; // si es FULL, se omite nota
-                if (shipment.IsFlex) zone = shipment.Zone;
+                var shipment = await _meliApiClient.GetShipmentAsync(last.ShippingId);
+                if (shipment != null)
+                {
+                    if (shipment.IsFull()) return null;
+                    if (shipment.IsFlex()) zone = shipment.GetZone();
+                }
             }
         }
         catch { }
 
-        // Consolidar asignaciones estructuradas considerando stock global entre órdenes
-        var globalAllocations = await _znubeClient.GetAllocationsForOrdersAsync(orderList);
+        var globalAllocations = await _znubeAllocationService.GetAllocationsForOrdersAsync(orderList);
         var lines = BuildGroupedLines(globalAllocations);
         if (!string.IsNullOrWhiteSpace(zone))
-        {
             lines.Add($"({zone})");
-        }
 
-        // Chequeo 24h para packs, usando la última orden como referencia
         try
         {
             var sellerId = EnvVars.GetString(EnvVars.Keys.MeliSellerId);
@@ -109,15 +101,35 @@ public class NoteService
             {
                 var to = last.DateCreatedUtc.Value;
                 var from = to.AddHours(-24);
-                var hasOther = await _meliClient.HasTwoOrMoreOrdersByBuyerAsync(from, to, last.BuyerNickname!, sellerId!);
+                var hasOther = await HasTwoOrMoreOrdersByBuyerAsync(from, to, last.BuyerNickname!, long.Parse(sellerId!));
                 if (hasOther)
-                {
                     lines.Add(Other24hTag);
-                }
             }
         }
         catch { }
         return string.Join("\n", lines);
+    }
+
+    private async Task<bool> HasTwoOrMoreOrdersByBuyerAsync(DateTimeOffset from, DateTimeOffset to, string buyerNickname, long sellerId)
+    {
+        var search = await _meliApiClient.SearchOrdersAsync(sellerId, buyerNickname, from.UtcDateTime, to.UtcDateTime);
+        if (search?.Results == null) return false;
+        var targetNick = buyerNickname?.Trim();
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var r in search.Results)
+        {
+            var resultNick = r.Buyer?.Nickname?.Trim();
+            if (string.IsNullOrWhiteSpace(resultNick) || string.IsNullOrWhiteSpace(targetNick)
+                || !string.Equals(resultNick, targetNick, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var key = r.PackId ?? r.Id;
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                keys.Add(key!);
+                if (keys.Count >= 2) return true;
+            }
+        }
+        return false;
     }
 
     public string BuildFinalNote(string? body)
@@ -146,7 +158,7 @@ public class NoteService
         return string.Join("\n", clean);
     }
 
-    private static List<string> BuildGroupedLines(IEnumerable<ZnubeClient.AllocationEntry> allocations)
+    private static List<string> BuildGroupedLines(IEnumerable<ZnubeAllocationEntry> allocations)
     {
         var result = new List<string>();
         if (allocations == null) return result;
