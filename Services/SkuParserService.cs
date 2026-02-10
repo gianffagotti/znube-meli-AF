@@ -1,8 +1,14 @@
 namespace meli_znube_integration.Services;
 
+/// <summary>Extensible SKU parser. Default implementation uses format CODIGO#COLOR#TALLE (split by '#').</summary>
+public interface ISkuParser
+{
+    SkuParts ParseSku(string sku);
+}
+
 public record SkuParts(string Code, string Color, string Size);
 
-public class SkuParserService
+public class SkuParserService : ISkuParser
 {
     public SkuParts ParseSku(string sku)
     {

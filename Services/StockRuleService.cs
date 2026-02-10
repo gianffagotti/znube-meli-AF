@@ -28,6 +28,8 @@ public class StockRuleService
             PartitionKey = sellerId,
             RowKey = ruleDto.TargetItemId,
             RuleType = ruleDto.RuleType,
+            PackMode = ruleDto.PackMode,
+            PackSurtidoGroupBy = ruleDto.PackSurtidoGroupBy,
             TargetItemId = ruleDto.TargetItemId,
             TargetTitle = ruleDto.TargetTitle,
             TargetThumbnail = ruleDto.TargetThumbnail,
@@ -183,6 +185,8 @@ public class StockRuleService
             TargetThumbnail = entity.TargetThumbnail,
             TargetSku = entity.TargetSku,
             RuleType = entity.RuleType,
+            PackMode = entity.PackMode,
+            PackSurtidoGroupBy = entity.PackSurtidoGroupBy,
             Components = string.IsNullOrEmpty(entity.ComponentsJson) 
                 ? new List<RuleComponentDto>() 
                 : JsonSerializer.Deserialize<List<RuleComponentDto>>(entity.ComponentsJson) ?? new List<RuleComponentDto>(),

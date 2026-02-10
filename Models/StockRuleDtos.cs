@@ -19,6 +19,14 @@ public class StockRuleDto
     [JsonPropertyName("ruleType")]
     public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
 
+    /// <summary>Optional. For PACK rules: "fixed" = one target variant = N units of one source variant; "assorted" = surtido by size/code. If null, mode is inferred from Mappings.</summary>
+    [JsonPropertyName("packMode")]
+    public string? PackMode { get; set; }
+
+    /// <summary>Optional. For PACK surtido: grouping key, e.g. "Size", "Code+Size". Reserved for future use.</summary>
+    [JsonPropertyName("packSurtidoGroupBy")]
+    public string? PackSurtidoGroupBy { get; set; }
+
     [JsonPropertyName("components")]
     public List<RuleComponentDto> Components { get; set; } = [];
 

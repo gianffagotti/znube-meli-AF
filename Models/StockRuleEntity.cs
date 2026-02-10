@@ -18,7 +18,13 @@ public class StockRuleEntity : ITableEntity
 
     // Config Properties
     public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
-    
+
+    /// <summary>Optional. PACK only: "fixed" | "assorted".</summary>
+    public string? PackMode { get; set; }
+
+    /// <summary>Optional. PACK surtido: e.g. "Size", "Code+Size".</summary>
+    public string? PackSurtidoGroupBy { get; set; }
+
     // Serialized list of components. Each component has SourceItemId and Quantity
     public string ComponentsJson { get; set; } = "[]"; 
     

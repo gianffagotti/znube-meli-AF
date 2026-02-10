@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
@@ -12,6 +13,8 @@ public class StockRulesApi
 {
     private readonly StockRuleService _service;
     private readonly ILogger<StockRulesApi> _logger;
+
+    private static object ErrorBody(string message) => new { message, traceId = Activity.Current?.Id ?? Guid.NewGuid().ToString() };
 
     public StockRulesApi(StockRuleService service, ILogger<StockRulesApi> logger)
     {
@@ -36,7 +39,40 @@ public class StockRulesApi
         {
             _logger.LogError(ex, "Error getting stock rules");
             var response = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await response.WriteStringAsync("Internal Server Error");
+            await response.WriteAsJsonAsync(ErrorBody("Error getting stock rules"));
+            return response;
+        }
+    }
+
+    [Function("GetStockRule")]
+    public async Task<HttpResponseData> GetRule(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "rules/{targetItemId}")] HttpRequestData req,
+        string targetItemId)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(targetItemId))
+            {
+                return req.CreateResponse(HttpStatusCode.BadRequest);
+            }
+
+            var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+            var rule = await _service.GetRuleAsync(sellerId, targetItemId);
+
+            if (rule == null)
+            {
+                return req.CreateResponse(HttpStatusCode.NotFound);
+            }
+
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            await response.WriteAsJsonAsync(rule);
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting stock rule for {TargetItemId}", targetItemId);
+            var response = req.CreateResponse(HttpStatusCode.InternalServerError);
+            await response.WriteAsJsonAsync(ErrorBody("Error getting stock rule"));
             return response;
         }
     }
@@ -65,15 +101,30 @@ public class StockRulesApi
                 return badResponse;
             }
 
+            if (ruleType.Equals("PACK", StringComparison.OrdinalIgnoreCase) || ruleType.Equals("COMBO", StringComparison.OrdinalIgnoreCase))
+            {
+                if (ruleDto.Components == null || ruleDto.Components.Count == 0)
+                {
+                    _logger.LogWarning("UpsertStockRule: PACK y COMBO requieren al menos un componente.");
+                    var badResponse = req.CreateResponse(HttpStatusCode.BadRequest);
+                    await badResponse.WriteAsJsonAsync(new { message = "PACK and COMBO rules require at least one component in 'components'." });
+                    return badResponse;
+                }
+            }
+
             await _service.SaveRuleAsync(ruleDto);
 
-            return req.CreateResponse(HttpStatusCode.OK);
+            var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+            var persisted = await _service.GetRuleAsync(sellerId, ruleDto.TargetItemId);
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            await response.WriteAsJsonAsync(persisted ?? ruleDto);
+            return response;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error upserting stock rule");
             var response = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await response.WriteStringAsync("Internal Server Error");
+            await response.WriteAsJsonAsync(ErrorBody("Error upserting stock rule"));
             return response;
         }
     }
@@ -93,7 +144,7 @@ public class StockRulesApi
         {
             _logger.LogError(ex, "Error deleting stock rule");
             var response = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await response.WriteStringAsync("Internal Server Error");
+            await response.WriteAsJsonAsync(ErrorBody("Error deleting stock rule"));
             return response;
         }
     }
