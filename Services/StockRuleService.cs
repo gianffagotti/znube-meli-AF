@@ -41,6 +41,8 @@ public class StockRuleService
             TargetVariantId = m.TargetVariantId,
             TargetSku = m.TargetSku,
             PackQuantity = m.PackQuantity,
+            Strategy = m.Strategy ?? "Explicit",
+            MatchSize = m.MatchSize,
             SourceMatches = m.SourceMatches.Select(sm => new RuleSourceMatch
             {
                 SourceItemId = sm.SourceItemId,
@@ -191,6 +193,8 @@ public class StockRuleService
                 TargetVariantId = m.TargetVariantId,
                 TargetSku = m.TargetSku,
                 PackQuantity = m.PackQuantity,
+                Strategy = m.Strategy ?? "Explicit",
+                MatchSize = m.MatchSize,
                 SourceMatches = m.SourceMatches.Select(sm => new RuleSourceMatchDto
                 {
                     SourceItemId = sm.SourceItemId,

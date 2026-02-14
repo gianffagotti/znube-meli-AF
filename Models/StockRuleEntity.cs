@@ -50,6 +50,10 @@ public class RuleVariantMapping
     public string TargetSku { get; set; }
     /// <summary>Optional per-variant pack size override. Null = use rule DefaultPackQuantity.</summary>
     public int? PackQuantity { get; set; }
+    /// <summary>Strategy: "Explicit" or "DynamicSize".</summary>
+    public string Strategy { get; set; } = "Explicit";
+    /// <summary>Used when Strategy == "DynamicSize". e.g. "M", "L", "42".</summary>
+    public string? MatchSize { get; set; }
     public List<RuleSourceMatch> SourceMatches { get; set; } = new();
 }
 

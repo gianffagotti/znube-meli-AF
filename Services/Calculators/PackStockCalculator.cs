@@ -3,13 +3,23 @@ using meli_znube_integration.Models;
 namespace meli_znube_integration.Services.Calculators;
 
 /// <summary>
-/// Calculates stock for PACK rules. Spec V2: algorithm is per-variant from mapping topology only.
-/// One SourceMatch = Simple: FLOOR(Source.Stock / Pack_Quantity). Multiple SourceMatches = Assorted: Pool_Stock = SUM(sources), FLOOR(Pool_Stock / Pack_Quantity).
-/// Pack quantity: mapping.PackQuantity ?? rule.DefaultPackQuantity ?? 1. Missing source → stock 0 (fail-safe, no exception).
+/// Calculates stock for PACK rules. Spec V2: algorithm is per-variant by Strategy.
+/// Explicit: pool = sum of SourceMatches stock; DynamicSize: pool = sum of source variants where ParseSizeFromSku(sku) == MatchSize.
+/// Target = Floor(pool / PackQuantity). Missing mapping or no match → 0 (fail-safe).
 /// </summary>
 public class PackStockCalculator : IStockCalculator
 {
     public string RuleType => "PACK";
+
+    /// <summary>Split by '#', take last segment (trimmed). Null/empty or no '#' → null. Used for DynamicSize and CODIGO#COLOR#TALLE-style SKUs.</summary>
+    public static string? ParseSizeFromSku(string? sku)
+    {
+        if (string.IsNullOrWhiteSpace(sku)) return null;
+        var idx = sku.LastIndexOf('#');
+        if (idx < 0) return null;
+        var segment = sku.Substring(idx + 1).Trim();
+        return string.IsNullOrEmpty(segment) ? null : segment;
+    }
 
     public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, MeliItem targetItem, List<MeliItem> sourceItems)
     {
@@ -40,30 +50,32 @@ public class PackStockCalculator : IStockCalculator
             int packQty = mapping.PackQuantity ?? defaultPackQty;
             if (packQty < 1) packQty = 1;
 
-            var sourceMatches = mapping.SourceMatches ?? new List<RuleSourceMatchDto>();
-
-            // Case B: Simple — single source SKU
-            if (sourceMatches.Count == 1)
+            int poolStock;
+            if (string.Equals(mapping.Strategy, "DynamicSize", StringComparison.OrdinalIgnoreCase))
             {
-                int sourceStock = GetSourceStock(sourceVariants, sourceMatches[0]);
-                int calculatedStock = (int)Math.Floor((double)sourceStock / packQty);
-                updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), calculatedStock));
-                continue;
+                // Dynamic: filter source variants by MatchSize (parsed from SKU), sum stock
+                if (string.IsNullOrWhiteSpace(mapping.MatchSize))
+                {
+                    poolStock = 0;
+                }
+                else
+                {
+                    poolStock = sourceVariants
+                        .Where(v => string.Equals(ParseSizeFromSku(v.SellerSku), mapping.MatchSize, StringComparison.OrdinalIgnoreCase))
+                        .Sum(v => v.AvailableQuantity);
+                }
+            }
+            else
+            {
+                // Explicit: sum stock of SourceMatches (single = Simple Pack, multiple = manual assorted)
+                var sourceMatches = mapping.SourceMatches ?? new List<RuleSourceMatchDto>();
+                poolStock = 0;
+                foreach (var sm in sourceMatches)
+                    poolStock += GetSourceStock(sourceVariants, sm);
             }
 
-            // Case A: Assorted — pool from multiple source SKUs; or no sources → 0
-            if (sourceMatches.Count == 0)
-            {
-                updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), 0));
-                continue;
-            }
-
-            int poolStock = 0;
-            foreach (var sm in sourceMatches)
-                poolStock += GetSourceStock(sourceVariants, sm);
-
-            int assortedStock = (int)Math.Floor((double)poolStock / packQty);
-            updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), assortedStock));
+            int calculatedStock = (int)Math.Floor((double)poolStock / packQty);
+            updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), calculatedStock));
         }
 
         return Task.FromResult(updates);

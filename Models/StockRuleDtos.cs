@@ -51,6 +51,14 @@ public class VariantMappingDto
     [JsonPropertyName("packQuantity")]
     public int? PackQuantity { get; set; }
 
+    /// <summary>Strategy: "Explicit" (use SourceMatches) or "DynamicSize" (pool by MatchSize).</summary>
+    [JsonPropertyName("strategy")]
+    public string Strategy { get; set; } = "Explicit";
+
+    /// <summary>Used when Strategy == "DynamicSize". e.g. "M", "L", "42".</summary>
+    [JsonPropertyName("matchSize")]
+    public string? MatchSize { get; set; }
+
     [JsonPropertyName("sourceMatches")]
     public List<RuleSourceMatchDto> SourceMatches { get; set; } = new();
 }
