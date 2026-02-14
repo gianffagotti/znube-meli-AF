@@ -1,6 +1,5 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
-using meli_znube_integration.Infrastructure;
 using Microsoft.Extensions.Logging;
 
 namespace meli_znube_integration.Services;
@@ -10,21 +9,22 @@ public class PackProcessor
     private readonly MeliAuth _auth;
     private readonly IMeliApiClient _meli;
     private readonly NoteService _noteService;
-    private readonly PackLockStoreBlob _lockStore;
     private readonly ILogger<PackProcessor> _logger;
 
     private static readonly bool SendBuyerMessageEnabled = EnvVars.GetBool(EnvVars.Keys.SendBuyerMessage, true);
     private static readonly bool UpsertOrderNoteEnabled = EnvVars.GetBool(EnvVars.Keys.UpsertOrderNote, true);
 
-    public PackProcessor(MeliAuth auth, IMeliApiClient meli, NoteService noteService, PackLockStoreBlob lockStore, ILogger<PackProcessor> logger)
+    public PackProcessor(MeliAuth auth, IMeliApiClient meli, NoteService noteService, ILogger<PackProcessor> logger)
     {
         _auth = auth;
         _meli = meli;
         _noteService = noteService;
-        _lockStore = lockStore;
         _logger = logger;
     }
 
+    /// <summary>
+    /// Processes a single order or pack (note + optional message). Locking is handled by the caller (OrderExecutionStore in Webhook).
+    /// </summary>
     public async Task<(string? OrderIdWritten, string? NoteText)> ProcessAsync(string orderIdFromWebhook)
     {
         var orderDto = await _meli.GetOrderAsync(orderIdFromWebhook);
@@ -55,55 +55,41 @@ public class PackProcessor
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para order {PackId}", orderIdFromWebhook);
+                _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para order {OrderId}", orderIdFromWebhook);
             }
             return (orderIdFromWebhook, final);
         }
 
         var packId = order.PackId!;
-        var (acquired, blob) = await _lockStore.TryAcquireAsync(packId);
-        if (!acquired)
-        {
-            _logger.LogDebug("Lock de pack {PackId} no adquirido, otro proceso lo maneja", packId);
+        var orderDtos = await _meli.GetPackOrdersAsync(packId);
+        if (orderDtos.Count == 0)
             return (null, null);
-        }
+        var orders = orderDtos.Select(d => d.ToOrder()).ToList();
+        var last = orders.Last();
 
+        var packBody = await _noteService.BuildConsolidatedBodyAsync(orders);
+        if (string.IsNullOrWhiteSpace(packBody))
+            return (null, null);
+        var packFinal = _noteService.BuildFinalNote(packBody);
+
+        if (string.IsNullOrWhiteSpace(last.Id))
+            return (null, null);
+        var packUpserted = false;
+        if (UpsertOrderNoteEnabled)
+            packUpserted = await _meli.CreateOrderNoteAsync(last.Id!, packFinal);
         try
         {
-            var orderDtos = await _meli.GetPackOrdersAsync(packId);
-            if (orderDtos.Count == 0)
-                return (null, null);
-            var orders = orderDtos.Select(d => d.ToOrder()).ToList();
-            var last = orders.Last();
-
-            var body = await _noteService.BuildConsolidatedBodyAsync(orders);
-            if (string.IsNullOrWhiteSpace(body))
-                return (null, null);
-            var final = _noteService.BuildFinalNote(body);
-
-            if (string.IsNullOrWhiteSpace(last.Id))
-                return (null, null);
-            var upserted = false;
-            if (UpsertOrderNoteEnabled)
-                upserted = await _meli.CreateOrderNoteAsync(last.Id!, final);
-            try
+            if (packUpserted && SendBuyerMessageEnabled)
             {
-                if (upserted && SendBuyerMessageEnabled)
-                {
-                    var buyerNameUpper = BuildBuyerNameUpper(orders);
-                    await _meli.SendMessageAsync(packId, BuildActionGuideMessage(buyerNameUpper));
-                }
+                var buyerNameUpper = BuildBuyerNameUpper(orders);
+                await _meli.SendMessageAsync(packId, BuildActionGuideMessage(buyerNameUpper));
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para pack {PackId}", packId);
-            }
-            return (last.Id, final);
         }
-        finally
+        catch (Exception ex)
         {
-            await _lockStore.MarkDoneAsync(blob);
+            _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para pack {PackId}", packId);
         }
+        return (last.Id, packFinal);
     }
 
     private static string BuildBuyerNameUpper(IEnumerable<MeliOrder> orders)

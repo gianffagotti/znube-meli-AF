@@ -40,7 +40,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddScoped<IZnubeApiClient, ZnubeApiClient>();
         services.AddScoped<IZnubeAllocationService, ZnubeAllocationService>();
         services.AddScoped<NoteService>();
-        services.AddSingleton<PackLockStoreBlob>();
+        services.AddSingleton<OrderExecutionStore>();
         services.AddScoped<PackProcessor>();
         services.AddTransient<ZnubeTokenHandler>();
         services.AddTransient<MeliTokenHandler>();

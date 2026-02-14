@@ -3,19 +3,12 @@ using meli_znube_integration.Models;
 namespace meli_znube_integration.Services.Calculators;
 
 /// <summary>
-/// Calculates stock for PACK rules. When PackMode is "fixed", only fixed-variant logic is used (mapping with single SourceMatch).
-/// When "assorted", only surtido by Size is used. When null, priority: (1) mapping with single SourceMatch, (2) surtido by Size.
-/// PackSurtidoGroupBy is persisted for future use (e.g. "Code+Size").
+/// Calculates stock for PACK rules. Spec V2: algorithm is per-variant from mapping topology only.
+/// One SourceMatch = Simple: FLOOR(Source.Stock / Pack_Quantity). Multiple SourceMatches = Assorted: Pool_Stock = SUM(sources), FLOOR(Pool_Stock / Pack_Quantity).
+/// Pack quantity: mapping.PackQuantity ?? rule.DefaultPackQuantity ?? 1. Missing source → stock 0 (fail-safe, no exception).
 /// </summary>
 public class PackStockCalculator : IStockCalculator
 {
-    private readonly ISkuParser _skuParser;
-
-    public PackStockCalculator(ISkuParser skuParser)
-    {
-        _skuParser = skuParser;
-    }
-
     public string RuleType => "PACK";
 
     public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, MeliItem targetItem, List<MeliItem> sourceItems)
@@ -30,23 +23,7 @@ public class PackStockCalculator : IStockCalculator
             }})
             .ToList();
 
-        // Build stock by Size for assorted PACK
-        var stockBySize = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var variant in sourceVariants)
-        {
-            if (string.IsNullOrWhiteSpace(variant.SellerSku)) continue;
-            var parts = _skuParser.ParseSku(variant.SellerSku);
-            if (!string.IsNullOrWhiteSpace(parts.Size))
-            {
-                if (!stockBySize.ContainsKey(parts.Size)) stockBySize[parts.Size] = 0;
-                stockBySize[parts.Size] += variant.AvailableQuantity;
-            }
-        }
-
-        int packQty = 1;
-        if (rule.Components != null && rule.Components.Count > 0)
-            packQty = rule.Components[0].Quantity;
-        if (packQty < 1) packQty = 1;
+        int defaultPackQty = rule.DefaultPackQuantity > 0 ? rule.DefaultPackQuantity : 1;
 
         var targetVariants = targetItem.Variations ?? new List<MeliVariation> { new MeliVariation {
             UserProductId = !string.IsNullOrEmpty(targetItem.UserProductId) ? targetItem.UserProductId : targetItem.Id,
@@ -55,53 +32,51 @@ public class PackStockCalculator : IStockCalculator
 
         foreach (var targetVar in targetVariants)
         {
-            var targetSku = targetVar.SellerSku;
-            if (string.IsNullOrWhiteSpace(targetSku)) continue;
+            if (string.IsNullOrWhiteSpace(targetVar.SellerSku) && string.IsNullOrWhiteSpace(targetVar.UserProductId)) continue;
 
-            var forceAssorted = string.Equals(rule.PackMode, "assorted", StringComparison.OrdinalIgnoreCase);
-            var forceFixed = string.Equals(rule.PackMode, "fixed", StringComparison.OrdinalIgnoreCase);
+            var mapping = FindMappingForTarget(rule, targetVar);
+            if (mapping == null) continue;
 
-            // Step 1: PACK variante fija — when not forced to assorted, try mapping with exactly one SourceMatch
-            if (!forceAssorted)
+            int packQty = mapping.PackQuantity ?? defaultPackQty;
+            if (packQty < 1) packQty = 1;
+
+            var sourceMatches = mapping.SourceMatches ?? new List<RuleSourceMatchDto>();
+
+            // Case B: Simple — single source SKU
+            if (sourceMatches.Count == 1)
             {
-                var mapping = FindMappingForTarget(rule, targetVar);
-                if (mapping != null && mapping.SourceMatches != null && mapping.SourceMatches.Count == 1)
-                {
-                    var sm = mapping.SourceMatches[0];
-                    var idToFind = !string.IsNullOrWhiteSpace(sm.SourceVariantId) ? sm.SourceVariantId : sm.SourceItemId;
-                    var sourceVar = sourceVariants.FirstOrDefault(s => s.UserProductId == idToFind);
-                    if (sourceVar == null && !string.IsNullOrWhiteSpace(sm.SourceSku))
-                        sourceVar = sourceVariants.FirstOrDefault(s => string.Equals(s.SellerSku, sm.SourceSku, StringComparison.OrdinalIgnoreCase));
-                    if (sourceVar != null)
-                    {
-                        int qty = sm.Quantity > 0 ? sm.Quantity : 1;
-                        int calculatedStock = (int)Math.Floor((double)sourceVar.AvailableQuantity / qty);
-                        updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), calculatedStock));
-                        continue;
-                    }
-                }
-                if (forceFixed) continue; // fixed mode but no valid mapping — skip this variant
-            }
-
-            // Step 2: PACK surtido — by Size (or exact SKU fallback); skipped when forceFixed and we already continued
-            var targetParts = _skuParser.ParseSku(targetSku);
-            if (!string.IsNullOrWhiteSpace(targetParts.Size) && stockBySize.TryGetValue(targetParts.Size, out int totalSizeStock))
-            {
-                int calculatedStock = (int)Math.Floor((double)totalSizeStock / packQty);
+                int sourceStock = GetSourceStock(sourceVariants, sourceMatches[0]);
+                int calculatedStock = (int)Math.Floor((double)sourceStock / packQty);
                 updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), calculatedStock));
+                continue;
             }
-            else
+
+            // Case A: Assorted — pool from multiple source SKUs; or no sources → 0
+            if (sourceMatches.Count == 0)
             {
-                var match = sourceVariants.FirstOrDefault(s => string.Equals(s.SellerSku, targetSku, StringComparison.OrdinalIgnoreCase));
-                if (match != null)
-                {
-                    int calculatedStock = (int)Math.Floor((double)match.AvailableQuantity / packQty);
-                    updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), calculatedStock));
-                }
+                updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), 0));
+                continue;
             }
+
+            int poolStock = 0;
+            foreach (var sm in sourceMatches)
+                poolStock += GetSourceStock(sourceVariants, sm);
+
+            int assortedStock = (int)Math.Floor((double)poolStock / packQty);
+            updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), assortedStock));
         }
 
         return Task.FromResult(updates);
+    }
+
+    /// <summary>Resolve source variant and return AvailableQuantity; 0 if not found (fail-safe).</summary>
+    private static int GetSourceStock(List<MeliVariation> sourceVariants, RuleSourceMatchDto sm)
+    {
+        var idToFind = !string.IsNullOrWhiteSpace(sm.SourceVariantId) ? sm.SourceVariantId : sm.SourceItemId;
+        var sourceVar = sourceVariants.FirstOrDefault(s => s.UserProductId == idToFind);
+        if (sourceVar == null && !string.IsNullOrWhiteSpace(sm.SourceSku))
+            sourceVar = sourceVariants.FirstOrDefault(s => string.Equals(s.SellerSku, sm.SourceSku, StringComparison.OrdinalIgnoreCase));
+        return sourceVar?.AvailableQuantity ?? 0;
     }
 
     private static VariantMappingDto? FindMappingForTarget(StockRuleDto rule, MeliVariation targetVar)

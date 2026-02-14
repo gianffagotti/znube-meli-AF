@@ -19,11 +19,8 @@ public class StockRuleEntity : ITableEntity
     // Config Properties
     public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
 
-    /// <summary>Optional. PACK only: "fixed" | "assorted".</summary>
-    public string? PackMode { get; set; }
-
-    /// <summary>Optional. PACK surtido: e.g. "Size", "Code+Size".</summary>
-    public string? PackSurtidoGroupBy { get; set; }
+    /// <summary>PACK rules: default pack size for fallbacks. Spec V2.</summary>
+    public int DefaultPackQuantity { get; set; } = 1;
 
     // Serialized list of components. Each component has SourceItemId and Quantity
     public string ComponentsJson { get; set; } = "[]"; 
@@ -51,6 +48,8 @@ public class RuleVariantMapping
 {
     public string TargetVariantId { get; set; } // The ML Variant ID (UserProductId)
     public string TargetSku { get; set; }
+    /// <summary>Optional per-variant pack size override. Null = use rule DefaultPackQuantity.</summary>
+    public int? PackQuantity { get; set; }
     public List<RuleSourceMatch> SourceMatches { get; set; } = new();
 }
 

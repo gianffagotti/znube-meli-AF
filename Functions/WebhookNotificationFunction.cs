@@ -1,5 +1,6 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
+using meli_znube_integration.Infrastructure;
 using meli_znube_integration.Models;
 using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
@@ -21,6 +22,7 @@ public class WebhookNotificationFunction
     private readonly StockMappingService _stockMappingService;
     private readonly StockRuleService _stockRuleService;
     private readonly StockCalculatorFactory _calculatorFactory;
+    private readonly OrderExecutionStore _orderExecutionStore;
     private readonly ILogger<WebhookNotificationFunction> _logger;
     private readonly IConfiguration _configuration;
 
@@ -30,6 +32,7 @@ public class WebhookNotificationFunction
         StockMappingService stockMappingService,
         StockRuleService stockRuleService,
         StockCalculatorFactory calculatorFactory,
+        OrderExecutionStore orderExecutionStore,
         ILogger<WebhookNotificationFunction> logger,
         IConfiguration configuration)
     {
@@ -38,6 +41,7 @@ public class WebhookNotificationFunction
         _stockMappingService = stockMappingService;
         _stockRuleService = stockRuleService;
         _calculatorFactory = calculatorFactory;
+        _orderExecutionStore = orderExecutionStore;
         _logger = logger;
         _configuration = configuration;
     }
@@ -283,13 +287,11 @@ public class WebhookNotificationFunction
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        // Aceptar solo recursos de órdenes
         if (resource!.IndexOf("/orders/", StringComparison.OrdinalIgnoreCase) < 0)
         {
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        // Validaciones tempranas del recurso y orderId
         var orderId = ExtractLastSegment(resource!);
         if (string.IsNullOrWhiteSpace(orderId) || !orderId.Trim().All(char.IsDigit))
         {
@@ -297,10 +299,21 @@ public class WebhookNotificationFunction
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
+        // Resolve execution key: PackId (group) or OrderId (single). Spec 02.
+        var orderDto = await _meliClient.GetOrderAsync(orderId);
+        var order = orderDto?.ToOrder();
+        var executionKey = !string.IsNullOrWhiteSpace(order?.PackId) ? order.PackId : orderId;
+
+        if (!await _orderExecutionStore.TryStartExecutionAsync(executionKey))
+        {
+            _logger.LogDebug("Order/Pack {Key} already locked or done. Returning 200 OK.", executionKey);
+            return req.CreateResponse(HttpStatusCode.OK);
+        }
+
         try
         {
             var (orderIdWritten, noteText) = await _processor.ProcessAsync(orderId);
-            _logger.LogInformation($"Nota: {noteText}");
+            _logger.LogInformation("Nota: {NoteText}", noteText);
 
             var res = req.CreateResponse(HttpStatusCode.OK);
             if (!string.IsNullOrWhiteSpace(noteText))
@@ -313,6 +326,10 @@ public class WebhookNotificationFunction
         {
             _logger.LogError(ex, "Error procesando orden {OrderId}", orderId);
             throw;
+        }
+        finally
+        {
+            await _orderExecutionStore.MarkDoneAsync(executionKey);
         }
     }
 

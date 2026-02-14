@@ -28,22 +28,19 @@ public class StockRuleService
             PartitionKey = sellerId,
             RowKey = ruleDto.TargetItemId,
             RuleType = ruleDto.RuleType,
-            PackMode = ruleDto.PackMode,
-            PackSurtidoGroupBy = ruleDto.PackSurtidoGroupBy,
+            DefaultPackQuantity = ruleDto.DefaultPackQuantity,
             TargetItemId = ruleDto.TargetItemId,
             TargetTitle = ruleDto.TargetTitle,
             TargetThumbnail = ruleDto.TargetThumbnail,
             TargetSku = ruleDto.TargetSku ?? "",
             ComponentsJson = JsonSerializer.Serialize(ruleDto.Components),
-            // Mappings are handled by the property setter in Entity which serializes to MappingJson
         };
-        
-        // Map DTO Mappings -> Entity Mappings
-        // We need to map List<VariantMappingDto> to List<RuleVariantMapping>
+
         entity.Mappings = ruleDto.Mappings.Select(m => new RuleVariantMapping
         {
             TargetVariantId = m.TargetVariantId,
             TargetSku = m.TargetSku,
+            PackQuantity = m.PackQuantity,
             SourceMatches = m.SourceMatches.Select(sm => new RuleSourceMatch
             {
                 SourceItemId = sm.SourceItemId,
@@ -185,15 +182,15 @@ public class StockRuleService
             TargetThumbnail = entity.TargetThumbnail,
             TargetSku = entity.TargetSku,
             RuleType = entity.RuleType,
-            PackMode = entity.PackMode,
-            PackSurtidoGroupBy = entity.PackSurtidoGroupBy,
-            Components = string.IsNullOrEmpty(entity.ComponentsJson) 
-                ? new List<RuleComponentDto>() 
+            DefaultPackQuantity = entity.DefaultPackQuantity,
+            Components = string.IsNullOrEmpty(entity.ComponentsJson)
+                ? new List<RuleComponentDto>()
                 : JsonSerializer.Deserialize<List<RuleComponentDto>>(entity.ComponentsJson) ?? new List<RuleComponentDto>(),
             Mappings = entity.Mappings.Select(m => new VariantMappingDto
             {
                 TargetVariantId = m.TargetVariantId,
                 TargetSku = m.TargetSku,
+                PackQuantity = m.PackQuantity,
                 SourceMatches = m.SourceMatches.Select(sm => new RuleSourceMatchDto
                 {
                     SourceItemId = sm.SourceItemId,
