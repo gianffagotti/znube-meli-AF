@@ -28,6 +28,7 @@ public static class EnvVars
         public const string EnableJobIndexer = "ENABLE_JOB_INDEXER";
         public const string EnableJobSyncV1 = "ENABLE_JOB_SYNC_V1";
         public const string EnableJobSyncV2 = "ENABLE_JOB_SYNC_V2";
+        public const string DryRun = "DRY_RUN";
     }
 
     public static string? GetString(string key, string? defaultValue = null)

@@ -45,4 +45,13 @@ public static class ResiliencePolicies
         // If both are exceeded, it throws BulkheadRejectedException
         return Policy.BulkheadAsync<HttpResponseMessage>(10, 50);
     }
+
+    /// <summary>Retry on 5xx for Znube. Spec 03: Znube 5xx → retry.</summary>
+    public static IAsyncPolicy<HttpResponseMessage> GetZnubeResiliencePolicy()
+    {
+        var delay = Backoff.DecorrelatedJitterBackoffV2(medianFirstRetryDelay: TimeSpan.FromSeconds(2), retryCount: 3);
+        return HttpPolicyExtensions
+            .HandleTransientHttpError()
+            .WaitAndRetryAsync(delay);
+    }
 }

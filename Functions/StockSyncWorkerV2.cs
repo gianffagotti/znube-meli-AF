@@ -13,20 +13,20 @@ public class StockSyncWorkerV2
 {
     private readonly StockRuleService _stockRuleService;
     private readonly IMeliApiClient _meliClient;
-    private readonly IZnubeApiClient _znubeClient;
+    private readonly IStockSyncSourceService _stockSyncSourceService;
     private readonly StockCalculatorFactory _calculatorFactory;
     private readonly ILogger<StockSyncWorkerV2> _logger;
 
     public StockSyncWorkerV2(
         StockRuleService stockRuleService,
         IMeliApiClient meliClient,
-        IZnubeApiClient znubeClient,
+        IStockSyncSourceService stockSyncSourceService,
         StockCalculatorFactory calculatorFactory,
         ILogger<StockSyncWorkerV2> logger)
     {
         _stockRuleService = stockRuleService;
         _meliClient = meliClient;
-        _znubeClient = znubeClient;
+        _stockSyncSourceService = stockSyncSourceService;
         _calculatorFactory = calculatorFactory;
         _logger = logger;
     }
@@ -93,7 +93,7 @@ public class StockSyncWorkerV2
                 }
 
                 // 2. Overwrite quantities with Znube stock (source of truth). Spec 03.
-                await EnrichSourceItemsWithZnubeStockAsync(sourceItems, ct);
+                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, ct);
 
                 // 3. Fetch target item
                 string finalTargetItemId = targetItemId;
@@ -113,10 +113,10 @@ public class StockSyncWorkerV2
                     return;
                 }
 
-                // 4. Anti-FULL guard. Spec 03: do not update fulfillment items.
-                if (string.Equals(targetItem.Shipping?.LogisticType, "fulfillment", StringComparison.OrdinalIgnoreCase))
+                // 4. Anti-FULL guard. Spec 03: skip fulfillment unless hybrid (has selling_address).
+                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem, ct))
                 {
-                    _logger.LogInformation("Skipping FULL item {TargetItemId}...", targetItemId);
+                    _logger.LogInformation("Skipping FULL-only item {TargetItemId} (no selling_address).", targetItemId);
                     return;
                 }
 
@@ -124,7 +124,7 @@ public class StockSyncWorkerV2
                 var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
                 var updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
 
-                // 6. Update MELI
+                // 6. Update MELI (selling_address only; MeliApiClient already uses type/selling_address). Spec 03.
                 foreach (var update in updates)
                 {
                     var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
@@ -142,43 +142,5 @@ public class StockSyncWorkerV2
         });
 
         _logger.LogInformation("Stock Sync V2 finished at: {Time}", DateTime.Now);
-    }
-
-    /// <summary>
-    /// Overwrites AvailableQuantity on each item/variation with Znube stock (source of truth). Missing/404 → 0 (fail-safe).
-    /// </summary>
-    private async Task EnrichSourceItemsWithZnubeStockAsync(List<MeliItem> sourceItems, CancellationToken ct)
-    {
-        foreach (var item in sourceItems)
-        {
-            if (item.Variations != null && item.Variations.Count > 0)
-            {
-                foreach (var variation in item.Variations)
-                {
-                    var sku = variation.SellerSku ?? item.SellerSku;
-                    if (string.IsNullOrWhiteSpace(sku)) continue;
-                    var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
-                    var qty = await GetZnubeQuantityBySkuAsync(normalizedSku, ct);
-                    variation.AvailableQuantity = qty;
-                }
-            }
-            else
-            {
-                var sku = item.SellerSku;
-                if (string.IsNullOrWhiteSpace(sku)) continue;
-                var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
-                var qty = await GetZnubeQuantityBySkuAsync(normalizedSku, ct);
-                item.AvailableQuantity = qty;
-            }
-        }
-    }
-
-    private async Task<int> GetZnubeQuantityBySkuAsync(string sku, CancellationToken ct)
-    {
-        var response = await _znubeClient.GetStockBySkuAsync(sku, ct);
-        if (response?.Data?.Stock == null) return 0;
-        var skuItem = response.Data.Stock.FirstOrDefault(s => string.Equals(s.Sku, sku, StringComparison.OrdinalIgnoreCase));
-        if (skuItem?.Stock == null) return 0;
-        return (int)Math.Max(0, skuItem.Stock.Sum(d => d.Quantity));
     }
 }

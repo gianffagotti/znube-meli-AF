@@ -22,6 +22,7 @@ public class WebhookNotificationFunction
     private readonly StockMappingService _stockMappingService;
     private readonly StockRuleService _stockRuleService;
     private readonly StockCalculatorFactory _calculatorFactory;
+    private readonly IStockSyncSourceService _stockSyncSourceService;
     private readonly OrderExecutionStore _orderExecutionStore;
     private readonly ILogger<WebhookNotificationFunction> _logger;
     private readonly IConfiguration _configuration;
@@ -32,6 +33,7 @@ public class WebhookNotificationFunction
         StockMappingService stockMappingService,
         StockRuleService stockRuleService,
         StockCalculatorFactory calculatorFactory,
+        IStockSyncSourceService stockSyncSourceService,
         OrderExecutionStore orderExecutionStore,
         ILogger<WebhookNotificationFunction> logger,
         IConfiguration configuration)
@@ -41,6 +43,7 @@ public class WebhookNotificationFunction
         _stockMappingService = stockMappingService;
         _stockRuleService = stockRuleService;
         _calculatorFactory = calculatorFactory;
+        _stockSyncSourceService = stockSyncSourceService;
         _orderExecutionStore = orderExecutionStore;
         _logger = logger;
         _configuration = configuration;
@@ -217,6 +220,21 @@ public class WebhookNotificationFunction
         {
              _logger.LogInformation("No se encontró target FULL para SKU: {Sku}", sku);
              return req.CreateResponse(HttpStatusCode.OK);
+        }
+
+        // 4b. Resolve target item for Anti-FULL guard (skip FULL-only; allow hybrid). Spec 03.
+        MeliItem? targetItemForGuard = null;
+        var targetSearch = await _meliClient.SearchItemsAsync(long.Parse(userId), new MeliItemSearchQuery { UserProductId = targetUserProductId });
+        var targetItemIdForGuard = targetSearch?.Results?.FirstOrDefault()?.Id;
+        if (!string.IsNullOrWhiteSpace(targetItemIdForGuard))
+        {
+            var targetItemsForGuard = await _meliClient.GetItemsAsync([targetItemIdForGuard!]);
+            targetItemForGuard = targetItemsForGuard?.FirstOrDefault();
+        }
+        if (targetItemForGuard != null && await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItemForGuard))
+        {
+            _logger.LogDebug("V1: Skipping FULL-only target for SKU {Sku} (no selling_address).", sku);
+            return req.CreateResponse(HttpStatusCode.OK);
         }
 
         // 5. Synchronization
@@ -426,13 +444,16 @@ public class WebhookNotificationFunction
                     continue;
                 }
 
-                // 2. Fetch Target Item
+                // 2. Overwrite quantities with Znube stock (source of truth). Spec 03.
+                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems);
+
+                // 3. Fetch Target Item
                 string finalTargetItemId = targetItemId;
                 if (!finalTargetItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
                 {
-                        var upSearch = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = finalTargetItemId });
-                        var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
-                        if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
+                    var upSearch = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = finalTargetItemId });
+                    var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
+                    if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
                 }
 
                 var targetItemsToCheck = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });
@@ -444,21 +465,25 @@ public class WebhookNotificationFunction
                     continue;
                 }
 
-                // CALCULATE
+                // 4. Anti-FULL guard. Spec 03: skip fulfillment unless hybrid (has selling_address).
+                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem))
+                {
+                    _logger.LogDebug("V2: Skipping FULL-only target {TargetId} (no selling_address).", targetItemId);
+                    continue;
+                }
+
+                // 5. CALCULATE (Engine calculators use Znube-derived quantities from enriched sourceItems)
                 var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
                 var updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
 
-                // UPDATE
+                // 6. UPDATE (selling_address only; MeliApiClient uses type/selling_address). Spec 03.
                 foreach (var update in updates)
                 {
                     var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
-                    if (currentStock != null)
+                    if (currentStock != null && currentStock.Value.Quantity != update.NewQuantity)
                     {
-                        if (currentStock.Value.Quantity != update.NewQuantity)
-                        {
-                            _logger.LogInformation("V2: Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
-                            await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version);
-                        }
+                        _logger.LogInformation("V2: Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
+                        await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version);
                     }
                 }
             }

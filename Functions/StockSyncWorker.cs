@@ -1,6 +1,8 @@
 using Azure.Storage.Blobs;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
+using meli_znube_integration.Models;
+using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -13,12 +15,14 @@ public class StockSyncWorker
 {
     private readonly ILogger<StockSyncWorker> _logger;
     private readonly IMeliApiClient _meliClient;
+    private readonly IStockSyncSourceService _stockSyncSourceService;
     private readonly IConfiguration _configuration;
 
-    public StockSyncWorker(ILogger<StockSyncWorker> logger, IMeliApiClient meliClient, IConfiguration configuration)
+    public StockSyncWorker(ILogger<StockSyncWorker> logger, IMeliApiClient meliClient, IStockSyncSourceService stockSyncSourceService, IConfiguration configuration)
     {
         _logger = logger;
         _meliClient = meliClient;
+        _stockSyncSourceService = stockSyncSourceService;
         _configuration = configuration;
     }
 
@@ -195,10 +199,19 @@ public class StockSyncWorker
 
             var (fullQuantity, version) = currentStock.Value;
 
-            // B. Compare
+            // B. Anti-FULL guard. Spec 03: do not update FULL-only (no selling_address).
+            var targetItems = await _meliClient.GetItemsAsync(new[] { mapping.Full.ItemId });
+            var targetItem = targetItems?.FirstOrDefault();
+            if (targetItem != null && await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem))
+            {
+                _logger.LogDebug("V1 Worker: Skipping FULL-only target ItemId {ItemId} (no selling_address).", mapping.Full.ItemId);
+                return;
+            }
+
+            // C. Compare
             if (fullQuantity == flexQuantity) return;
 
-            // C. Update
+            // D. Update
             _logger.LogInformation($"Updating SKU {mapping.Sku} (ItemID: {mapping.Full.ItemId}, UP: {userProductId}): Flex({flexQuantity}) vs Full({fullQuantity}).");
 
             bool success = await _meliClient.UpdateUserProductStockAsync(userProductId, flexQuantity, version);

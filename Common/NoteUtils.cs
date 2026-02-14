@@ -5,12 +5,14 @@ namespace meli_znube_integration.Common;
 
 public static class NoteUtils
 {
-    public const string AutoTag = "[AUTO]";
+    /// <summary>Current prefix for new notes. Spec 02: [A] (4 chars with space).</summary>
+    public const string AutoTag = "[A]";
 
     public static bool IsAutoNote(string? note)
     {
         if (string.IsNullOrWhiteSpace(note)) return false;
-        return note!.StartsWith(AutoTag, StringComparison.Ordinal);
+        return note!.StartsWith(AutoTag, StringComparison.Ordinal)
+            || note.StartsWith("[AUTO]", StringComparison.Ordinal);
     }
 
     public static bool ContainsAutoNote(IEnumerable<string> notes)
@@ -24,10 +26,10 @@ public static class NoteUtils
         var body = text ?? string.Empty;
         if (IsAutoNote(body))
         {
-            // Asegura el espacio después del tag para consistencia visual
-            return body.StartsWith(AutoTag + " ", StringComparison.Ordinal)
-                ? body
-                : body.Insert(AutoTag.Length, " ");
+            if (body.StartsWith(AutoTag + " ", StringComparison.Ordinal)) return body;
+            if (body.StartsWith(AutoTag, StringComparison.Ordinal)) return body.Insert(AutoTag.Length, " ");
+            if (body.StartsWith("[AUTO] ", StringComparison.Ordinal)) return AutoTag + " " + body.Substring(7);
+            if (body.StartsWith("[AUTO]", StringComparison.Ordinal)) return AutoTag + " " + body.Substring(6).TrimStart();
         }
         return AutoTag + " " + body;
     }

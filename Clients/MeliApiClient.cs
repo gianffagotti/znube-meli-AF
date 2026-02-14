@@ -205,6 +205,16 @@ public class MeliApiClient : IMeliApiClient
         return (quantity, version);
     }
 
+    public async Task<MeliUserProductStockResponseDto?> GetUserProductStockResponseAsync(string userProductId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(userProductId)) return null;
+        var client = GetClient();
+        using var res = await client.GetAsync($"user-products/{Uri.EscapeDataString(userProductId)}/stock", cancellationToken);
+        if (!res.IsSuccessStatusCode) return null;
+        var json = await res.Content.ReadAsStringAsync(cancellationToken);
+        return JsonSerializer.Deserialize<MeliUserProductStockResponseDto>(json, JsonOptions);
+    }
+
     public async Task<bool> UpdateUserProductStockAsync(string userProductId, int quantity, string version, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(userProductId)) return false;

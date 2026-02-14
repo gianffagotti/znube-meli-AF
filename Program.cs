@@ -32,14 +32,16 @@ var host = Host.CreateDefaultBuilder(args)
             c.BaseAddress = new Uri(context.Configuration[EnvVars.Keys.ZnubeBaseUrl]!);
             c.Timeout = TimeSpan.FromSeconds(45);
         })
-        .AddHttpMessageHandler<ZnubeTokenHandler>();
+        .AddHttpMessageHandler<ZnubeTokenHandler>()
+        .AddPolicyHandler(ResiliencePolicies.GetZnubeResiliencePolicy());
 
         services.AddSingleton<TokensStoreBlob>();
         services.AddSingleton<MeliAuth>();
         services.AddScoped<IMeliApiClient, MeliApiClient>();
         services.AddScoped<IZnubeApiClient, ZnubeApiClient>();
         services.AddScoped<IZnubeAllocationService, ZnubeAllocationService>();
-        services.AddScoped<NoteService>();
+        services.AddScoped<INoteContentBuilder, NoteContentBuilder>();
+        services.AddScoped<INotePersisterService, NotePersisterService>();
         services.AddSingleton<OrderExecutionStore>();
         services.AddScoped<PackProcessor>();
         services.AddTransient<ZnubeTokenHandler>();
@@ -48,6 +50,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddTransient<MeliRateLimitHandler>();
         services.AddSingleton<StockMappingService>();
         services.AddSingleton<StockRuleService>();
+        services.AddScoped<IStockSyncSourceService, StockSyncSourceService>();
         services.AddSingleton<ISkuParser, SkuParserService>();
 
         // Calculators
