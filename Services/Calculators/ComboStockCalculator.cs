@@ -15,23 +15,10 @@ public class ComboStockCalculator : IStockCalculator
         var updates = new List<VariantStockUpdate>();
 
         var sourceVariants = sourceItems
-            .SelectMany(i => i.Variations ?? new List<MeliVariation> {
-                new MeliVariation {
-                    UserProductId = !string.IsNullOrEmpty(i.UserProductId) ? i.UserProductId : i.Id,
-                    SellerSku = i.SellerSku,
-                    AvailableQuantity = i.AvailableQuantity,
-                    Id = !string.IsNullOrEmpty(i.Id) && long.TryParse(i.Id.Replace("MLA", ""), out long pid) ? pid : 0
-                }
-            })
+            .SelectMany(i => i.Variations)
             .ToList();
 
-        var targetVariants = targetItem.Variations ?? new List<MeliVariation> {
-            new MeliVariation {
-                UserProductId = !string.IsNullOrEmpty(targetItem.UserProductId) ? targetItem.UserProductId : targetItem.Id,
-                SellerSku = targetItem.SellerSku,
-                Id = !string.IsNullOrEmpty(targetItem.Id) && long.TryParse(targetItem.Id.Replace("MLA", ""), out long tid) ? tid : 0
-            }
-        };
+        var targetVariants = targetItem.Variations;
 
         foreach (var targetVar in targetVariants)
         {

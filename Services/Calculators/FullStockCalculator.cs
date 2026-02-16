@@ -12,19 +12,11 @@ public class FullStockCalculator : IStockCalculator
         
         // Flatten source variants for easy lookup by SKU
         var sourceVariants = sourceItems
-            .SelectMany(i => i.Variations ?? new List<MeliVariation> { new MeliVariation { 
-                // Id is long, Item.Id is string. Use UserProductId or Item.Id as UPID.
-                UserProductId = !string.IsNullOrEmpty(i.UserProductId) ? i.UserProductId : i.Id,
-                SellerSku = i.SellerSku, 
-                AvailableQuantity = i.AvailableQuantity
-            }})
+            .SelectMany(i => i.Variations)
             .ToList();
 
         // Iterate Target Variants
-        var targetVariants = targetItem.Variations ?? new List<MeliVariation> { new MeliVariation { 
-            UserProductId = !string.IsNullOrEmpty(targetItem.UserProductId) ? targetItem.UserProductId : targetItem.Id,
-            SellerSku = targetItem.SellerSku
-        }};
+        var targetVariants = targetItem.Variations;
 
         foreach (var targetVar in targetVariants)
         {

@@ -42,7 +42,7 @@ public class StockSyncWorkerV2
             return;
         }
 
-        var rules = await _stockRuleService.GetAllRulesAsync();
+        var rules = await _stockRuleService.GetRulesBySellerAsync();
         if (rules == null || rules.Count == 0)
         {
             _logger.LogInformation("No stock rules found. Exiting.");

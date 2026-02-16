@@ -28,8 +28,7 @@ public class StockRulesApi
     {
         try
         {
-            var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
-            var dtos = await _service.GetRulesBySellerAsync(sellerId);
+            var dtos = await _service.GetRulesBySellerAsync();
 
             var response = req.CreateResponse(HttpStatusCode.OK);
             await response.WriteAsJsonAsync(dtos);

@@ -26,19 +26,12 @@ public class PackStockCalculator : IStockCalculator
         var updates = new List<VariantStockUpdate>();
 
         var sourceVariants = sourceItems
-            .SelectMany(i => i.Variations ?? new List<MeliVariation> { new MeliVariation {
-                UserProductId = !string.IsNullOrEmpty(i.UserProductId) ? i.UserProductId : i.Id,
-                SellerSku = i.SellerSku,
-                AvailableQuantity = i.AvailableQuantity
-            }})
+            .SelectMany(i => i.Variations)
             .ToList();
 
         int defaultPackQty = rule.DefaultPackQuantity > 0 ? rule.DefaultPackQuantity : 1;
 
-        var targetVariants = targetItem.Variations ?? new List<MeliVariation> { new MeliVariation {
-            UserProductId = !string.IsNullOrEmpty(targetItem.UserProductId) ? targetItem.UserProductId : targetItem.Id,
-            SellerSku = targetItem.SellerSku
-        }};
+        var targetVariants = targetItem.Variations;
 
         foreach (var targetVar in targetVariants)
         {
@@ -51,7 +44,7 @@ public class PackStockCalculator : IStockCalculator
             if (packQty < 1) packQty = 1;
 
             int poolStock;
-            if (string.Equals(mapping.Strategy, "DynamicSize", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(mapping.Strategy, "dynamic_size", StringComparison.OrdinalIgnoreCase))
             {
                 // Dynamic: filter source variants by MatchSize (parsed from SKU), sum stock
                 if (string.IsNullOrWhiteSpace(mapping.MatchSize))

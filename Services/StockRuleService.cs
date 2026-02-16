@@ -90,23 +90,12 @@ public class StockRuleService
         }
     }
 
-    public async Task<List<StockRuleDto>> GetRulesBySellerAsync(string sellerId)
+    public async Task<List<StockRuleDto>> GetRulesBySellerAsync(string? sellerId = null)
     {
+        sellerId ??= EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+
         var rules = new List<StockRuleDto>();
         var query = _tableClient.QueryAsync<StockRuleEntity>(filter: $"PartitionKey eq '{sellerId}'");
-
-        await foreach (var rule in query)
-        {
-            rules.Add(MapToDto(rule));
-        }
-
-        return rules;
-    }
-
-    public async Task<List<StockRuleDto>> GetAllRulesAsync()
-    {
-        var rules = new List<StockRuleDto>();
-        var query = _tableClient.QueryAsync<StockRuleEntity>();
 
         await foreach (var rule in query)
         {
