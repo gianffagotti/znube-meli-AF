@@ -30,15 +30,45 @@ public class ZnubeApiClient : IZnubeApiClient
         return dto;
     }
 
+    /// <summary>
+    /// Page size for Znube GetStock by productId. API max is 100. Spec 03.
+    /// </summary>
+    private const int StockPageLimit = 100;
+
     public async Task<OmnichannelResponse?> GetStockByProductIdAsync(string productId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(productId)) return null;
         var client = GetClient();
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"Omnichannel/GetStock?sku={Uri.EscapeDataString(productId)}#");
-        using var res = await client.SendAsync(req, cancellationToken);
-        if (res.StatusCode == HttpStatusCode.NotFound) return null;
-        if (!res.IsSuccessStatusCode) res.EnsureSuccessStatusCode();
-        var body = await res.Content.ReadAsStringAsync(cancellationToken);
-        return JsonSerializer.Deserialize<OmnichannelResponse>(body, JsonOptions);
+        var baseQuery = $"Omnichannel/GetStock?sku={Uri.EscapeDataString(productId)}#";
+        var allStock = new List<OmnichannelStockItem>();
+        OmnichannelResponse? firstResponse = null;
+        var offset = 0;
+
+        do
+        {
+            var url = $"{baseQuery}&limit={StockPageLimit}&offset={offset}";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var res = await client.SendAsync(req, cancellationToken);
+            if (res.StatusCode == HttpStatusCode.NotFound) return null;
+            if (!res.IsSuccessStatusCode) res.EnsureSuccessStatusCode();
+            var body = await res.Content.ReadAsStringAsync(cancellationToken);
+            var page = JsonSerializer.Deserialize<OmnichannelResponse>(body, JsonOptions);
+            if (page?.Data == null) return firstResponse ?? page;
+
+            if (firstResponse == null)
+                firstResponse = page;
+
+            if (page.Data.Stock != null)
+                allStock.AddRange(page.Data.Stock);
+
+            var totalSku = page.Data.TotalSku;
+            offset += StockPageLimit;
+            if (totalSku <= offset || (page.Data.Stock?.Count ?? 0) == 0)
+                break;
+        } while (true);
+
+        if (firstResponse?.Data == null) return firstResponse;
+        firstResponse.Data.Stock = allStock;
+        return firstResponse;
     }
 }

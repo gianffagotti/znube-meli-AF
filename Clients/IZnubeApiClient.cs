@@ -10,7 +10,7 @@ public interface IZnubeApiClient
     Task<OmnichannelResponse?> GetStockBySkuAsync(string sku, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// GET Omnichannel/GetStock?sku={productId}#. Used when assignment cannot be resolved by SKU alone.
+    /// GET Omnichannel/GetStock?sku={productId}# with limit and offset. Returns all SKUs for the product by paginating (limit max 100). Spec 03.
     /// </summary>
     Task<OmnichannelResponse?> GetStockByProductIdAsync(string productId, CancellationToken cancellationToken = default);
 }
