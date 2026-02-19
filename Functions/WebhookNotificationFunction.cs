@@ -23,7 +23,7 @@ public class WebhookNotificationFunction
     private readonly StockRuleService _stockRuleService;
     private readonly StockCalculatorFactory _calculatorFactory;
     private readonly IStockSyncSourceService _stockSyncSourceService;
-    private readonly OrderExecutionStore _orderExecutionStore;
+    private readonly IOrderExecutionStore _orderExecutionStore;
     private readonly ILogger<WebhookNotificationFunction> _logger;
     private readonly IConfiguration _configuration;
 
@@ -34,7 +34,7 @@ public class WebhookNotificationFunction
         StockRuleService stockRuleService,
         StockCalculatorFactory calculatorFactory,
         IStockSyncSourceService stockSyncSourceService,
-        OrderExecutionStore orderExecutionStore,
+        IOrderExecutionStore orderExecutionStore,
         ILogger<WebhookNotificationFunction> logger,
         IConfiguration configuration)
     {
@@ -300,24 +300,16 @@ public class WebhookNotificationFunction
 
     private async Task<HttpResponseData> ProcessOrderNotification(HttpRequestData req, string? resource)
     {
-        if (string.IsNullOrWhiteSpace(resource))
+        var (isValid, orderId) = WebhookOrderResourceHelper.TryParseOrderIdFromResource(resource);
+        if (!isValid || string.IsNullOrWhiteSpace(orderId))
         {
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        if (resource!.IndexOf("/orders/", StringComparison.OrdinalIgnoreCase) < 0)
-        {
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        var orderId = ExtractLastSegment(resource!);
-        if (string.IsNullOrWhiteSpace(orderId) || !orderId.Trim().All(char.IsDigit))
-        {
-            _logger.LogDebug("webhook ignorado: resource sin orderId válido: {Resource}", resource);
+            if (!string.IsNullOrWhiteSpace(resource))
+                _logger.LogDebug("webhook ignorado: resource sin orderId válido: {Resource}", resource);
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
         // Resolve execution key: PackId (group) or OrderId (single). Spec 02.
+        // If GetOrderAsync returns null (order not found), executionKey = orderId; ProcessAsync returns (null,null); we still MarkDoneAsync to avoid stuck executions.
         var orderDto = await _meliClient.GetOrderAsync(orderId);
         var order = orderDto?.ToOrder();
         var executionKey = !string.IsNullOrWhiteSpace(order?.PackId) ? order.PackId : orderId;
@@ -444,8 +436,8 @@ public class WebhookNotificationFunction
                     continue;
                 }
 
-                // 2. Overwrite quantities with Znube stock (source of truth). Spec 03.
-                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems);
+                // 2. Overwrite quantities with Znube stock (source of truth). Webhook: SKU for FULL/Combo, ProductId for PACK. Spec 03.
+                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, rule.RuleType, fromWorker: false, req.FunctionContext.CancellationToken);
 
                 // 3. Fetch Target Item
                 string finalTargetItemId = targetItemId;
@@ -494,16 +486,6 @@ public class WebhookNotificationFunction
         }
 
         return req.CreateResponse(HttpStatusCode.OK);
-    }
-
-    private static string ExtractLastSegment(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return string.Empty;
-        }
-        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length > 0 ? parts[parts.Length - 1] : string.Empty;
     }
 }
 

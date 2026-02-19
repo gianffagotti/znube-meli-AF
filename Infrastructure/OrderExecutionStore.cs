@@ -8,7 +8,7 @@ namespace meli_znube_integration.Infrastructure;
 /// Unified order/pack execution store using Azure Table Storage. Spec 02.
 /// Handles idempotency (Already Done) and concurrency (Processing now). No Blob Storage.
 /// </summary>
-public class OrderExecutionStore
+public class OrderExecutionStore : IOrderExecutionStore
 {
     private const string PartitionKeyValue = "OrderExec";
     private const string StatusProcessing = "Processing";

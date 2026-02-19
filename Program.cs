@@ -42,7 +42,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddScoped<IZnubeAllocationService, ZnubeAllocationService>();
         services.AddScoped<INoteContentBuilder, NoteContentBuilder>();
         services.AddScoped<INotePersisterService, NotePersisterService>();
-        services.AddSingleton<OrderExecutionStore>();
+        services.AddSingleton<IOrderExecutionStore, OrderExecutionStore>();
         services.AddScoped<PackProcessor>();
         services.AddTransient<ZnubeTokenHandler>();
         services.AddTransient<MeliTokenHandler>();

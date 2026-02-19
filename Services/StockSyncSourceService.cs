@@ -22,9 +22,20 @@ public class StockSyncSourceService : IStockSyncSourceService
         _logger = logger;
     }
 
-    public async Task EnrichSourceItemsWithZnubeStockAsync(List<MeliItem> sourceItems, CancellationToken cancellationToken = default)
+    public async Task EnrichSourceItemsWithZnubeStockAsync(List<MeliItem> sourceItems, string ruleType, bool fromWorker, CancellationToken cancellationToken = default)
     {
         if (sourceItems == null) return;
+        var useProductId = fromWorker || string.Equals(ruleType, "PACK", StringComparison.OrdinalIgnoreCase);
+
+        if (useProductId)
+            await EnrichByProductIdAsync(sourceItems, cancellationToken);
+        else
+            await EnrichBySkuAsync(sourceItems, cancellationToken);
+    }
+
+    /// <summary>Strategy by SKU: one call per variant. 404 → 0; 5xx/timeout → propagate. Spec 03.</summary>
+    private async Task EnrichBySkuAsync(List<MeliItem> sourceItems, CancellationToken ct)
+    {
         foreach (var item in sourceItems)
         {
             if (item.Variations != null && item.Variations.Count > 0)
@@ -34,7 +45,7 @@ public class StockSyncSourceService : IStockSyncSourceService
                     var sku = variation.SellerSku ?? item.SellerSku;
                     if (string.IsNullOrWhiteSpace(sku)) continue;
                     var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
-                    var qty = await GetZnubeQuantityBySkuAsync(normalizedSku, cancellationToken);
+                    var qty = await GetZnubeQuantityBySkuAsync(normalizedSku, ct);
                     variation.AvailableQuantity = qty;
                 }
             }
@@ -43,28 +54,88 @@ public class StockSyncSourceService : IStockSyncSourceService
                 var sku = item.SellerSku;
                 if (string.IsNullOrWhiteSpace(sku)) continue;
                 var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
-                var qty = await GetZnubeQuantityBySkuAsync(normalizedSku, cancellationToken);
+                var qty = await GetZnubeQuantityBySkuAsync(normalizedSku, ct);
                 item.AvailableQuantity = qty;
             }
         }
     }
 
-    /// <summary>Znube 404 or missing data → 0 (fail-safe). Spec 03.</summary>
+    /// <summary>Strategy by ProductId: group by productId, one call per product, map to variants. 404/empty → 0 for that product; 5xx → propagate. Spec 03.</summary>
+    private async Task EnrichByProductIdAsync(List<MeliItem> sourceItems, CancellationToken ct)
+    {
+        var skuToQty = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var productIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var skuToProductId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in sourceItems)
+        {
+            if (item.Variations != null && item.Variations.Count > 0)
+            {
+                foreach (var variation in item.Variations)
+                {
+                    var sku = variation.SellerSku ?? item.SellerSku;
+                    if (string.IsNullOrWhiteSpace(sku)) continue;
+                    var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
+                    var productId = ZnubeLogicExtensions.GetProductIdFromSku(normalizedSku);
+                    productIds.Add(productId);
+                    skuToProductId[normalizedSku] = productId;
+                }
+            }
+            else
+            {
+                var sku = item.SellerSku;
+                if (string.IsNullOrWhiteSpace(sku)) continue;
+                var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
+                var productId = ZnubeLogicExtensions.GetProductIdFromSku(normalizedSku);
+                productIds.Add(productId);
+                skuToProductId[normalizedSku] = productId;
+            }
+        }
+
+        foreach (var productId in productIds)
+        {
+            var response = await _znubeClient.GetStockByProductIdAsync(productId, ct);
+            if (response?.Data?.Stock == null) continue;
+            foreach (var skuItem in response.Data.Stock)
+            {
+                if (skuItem == null) continue;
+                var sku = skuItem.Sku;
+                if (string.IsNullOrWhiteSpace(sku) || !skuToProductId.ContainsKey(sku)) continue;
+                var qty = skuItem.Stock == null ? 0 : (int)Math.Max(0, skuItem.Stock.Sum(d => d.Quantity));
+                skuToQty[sku] = qty;
+            }
+        }
+
+        foreach (var item in sourceItems)
+        {
+            if (item.Variations != null && item.Variations.Count > 0)
+            {
+                foreach (var variation in item.Variations)
+                {
+                    var sku = variation.SellerSku ?? item.SellerSku;
+                    if (string.IsNullOrWhiteSpace(sku)) continue;
+                    var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
+                    variation.AvailableQuantity = skuToQty.TryGetValue(normalizedSku, out var q) ? q : 0;
+                }
+            }
+            else
+            {
+                var sku = item.SellerSku;
+                if (string.IsNullOrWhiteSpace(sku)) continue;
+                var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
+                item.AvailableQuantity = skuToQty.TryGetValue(normalizedSku, out var q) ? q : 0;
+            }
+        }
+    }
+
+    /// <summary>Znube 404 (null response) → 0. 5xx/timeout → propagate (never return 0 to avoid mass-zero on MELI). Spec 03.</summary>
     private async Task<int> GetZnubeQuantityBySkuAsync(string sku, CancellationToken ct)
     {
-        try
-        {
-            var response = await _znubeClient.GetStockBySkuAsync(sku, ct);
-            if (response?.Data?.Stock == null) return 0;
-            var skuItem = response.Data.Stock.FirstOrDefault(s => string.Equals(s.Sku, sku, StringComparison.OrdinalIgnoreCase));
-            if (skuItem?.Stock == null) return 0;
-            return (int)Math.Max(0, skuItem.Stock.Sum(d => d.Quantity));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Znube stock fetch for SKU {Sku} failed; using 0.", sku);
-            return 0;
-        }
+        var response = await _znubeClient.GetStockBySkuAsync(sku, ct);
+        if (response?.Data?.Stock == null) return 0;
+        var skuItem = response.Data.Stock.FirstOrDefault(s => string.Equals(s.Sku, sku, StringComparison.OrdinalIgnoreCase));
+        if (skuItem?.Stock == null) return 0;
+        return (int)Math.Max(0, skuItem.Stock.Sum(d => d.Quantity));
     }
 
     public async Task<bool> ShouldSkipFulfillmentTargetAsync(MeliItem targetItem, CancellationToken cancellationToken = default)

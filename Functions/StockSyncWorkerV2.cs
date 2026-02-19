@@ -92,8 +92,8 @@ public class StockSyncWorkerV2
                     return;
                 }
 
-                // 2. Overwrite quantities with Znube stock (source of truth). Spec 03.
-                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, ct);
+                // 2. Overwrite quantities with Znube stock (source of truth). Worker always uses ProductId strategy. Spec 03.
+                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, rule.RuleType, fromWorker: true, ct);
 
                 // 3. Fetch target item
                 string finalTargetItemId = targetItemId;
@@ -131,7 +131,7 @@ public class StockSyncWorkerV2
                     if (currentStock != null && currentStock.Value.Quantity != update.NewQuantity)
                     {
                         _logger.LogInformation("Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
-                        await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version);
+                        await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version, ct);
                     }
                 }
             }

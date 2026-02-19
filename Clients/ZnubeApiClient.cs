@@ -39,7 +39,7 @@ public class ZnubeApiClient : IZnubeApiClient
     {
         if (string.IsNullOrWhiteSpace(productId)) return null;
         var client = GetClient();
-        var baseQuery = $"Omnichannel/GetStock?sku={Uri.EscapeDataString(productId)}#";
+        var baseQuery = $"Omnichannel/GetStock?sku={Uri.EscapeDataString(productId)}%23";
         var allStock = new List<OmnichannelStockItem>();
         OmnichannelResponse? firstResponse = null;
         var offset = 0;

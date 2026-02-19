@@ -6,6 +6,16 @@ namespace meli_znube_integration.Common;
 public static class ZnubeLogicExtensions
 {
     /// <summary>
+    /// Extracts productId from SKU. Format: productId#color#talle. Returns part before first '#', or full SKU if no '#'.
+    /// </summary>
+    public static string GetProductIdFromSku(string? sku)
+    {
+        if (string.IsNullOrWhiteSpace(sku)) return sku ?? string.Empty;
+        var idx = sku.IndexOf('#', StringComparison.Ordinal);
+        return idx >= 0 ? sku[..idx] : sku;
+    }
+
+    /// <summary>
     /// Normalizes a seller SKU to the format expected by the Znube API.
     /// </summary>
     public static string NormalizeSellerSku(string? sellerSku)
