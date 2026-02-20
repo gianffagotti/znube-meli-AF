@@ -1,6 +1,33 @@
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace meli_znube_integration.Models.Dtos;
+
+/// <summary>
+/// Converts JSON number or string tokens to string. Mercado Libre API may return IDs as numbers.
+/// </summary>
+public class JsonStringFromNumberConverter : JsonConverter<string?>
+{
+    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        return reader.TokenType switch
+        {
+            JsonTokenType.Number => reader.TryGetInt64(out var l) ? l.ToString() : Encoding.UTF8.GetString(reader.ValueSpan),
+            JsonTokenType.String => reader.GetString(),
+            JsonTokenType.Null => null,
+            _ => throw new JsonException($"Unexpected token {reader.TokenType} when parsing string.")
+        };
+    }
+
+    public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options)
+    {
+        if (value == null)
+            writer.WriteNullValue();
+        else
+            writer.WriteStringValue(value);
+    }
+}
 
 // --- Shipment DTOs ---
 public class MeliShipmentDto
@@ -42,8 +69,10 @@ public class MeliCityDto
 // --- Order DTOs ---
 public class MeliOrderDto
 {
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
     public string? Id { get; set; }
     [JsonPropertyName("pack_id")]
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
     public string? PackId { get; set; }
     [JsonPropertyName("date_created")]
     public string? DateCreated { get; set; }
@@ -55,6 +84,7 @@ public class MeliOrderDto
 
 public class MeliOrderShippingDto
 {
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
     public string? Id { get; set; }
 }
 
@@ -65,6 +95,7 @@ public class MeliOrderWrapperDto
 
 public class MeliOrderBuyerDto
 {
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
     public string? Id { get; set; }
     public string? Nickname { get; set; }
     [JsonPropertyName("first_name")]
@@ -83,6 +114,7 @@ public class MeliOrderItemDto
 
 public class MeliItemShortDto
 {
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
     public string? Id { get; set; }
     public string? Title { get; set; }
     [JsonPropertyName("seller_sku")]
@@ -92,6 +124,7 @@ public class MeliItemShortDto
 // --- Pack DTO ---
 public class MeliPackDto
 {
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
     public string? Id { get; set; }
     public List<MeliOrderDto> Orders { get; set; } = new();
 }
@@ -123,12 +156,14 @@ public class MeliSearchResponseDto
 
 public class MeliSearchResultDto
 {
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
     public string? Id { get; set; }
     public string? Title { get; set; }
     [JsonPropertyName("seller_sku")]
     public string? SellerSku { get; set; }
     public string? Permalink { get; set; }
     [JsonPropertyName("pack_id")]
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
     public string? PackId { get; set; }
     public MeliOrderBuyerDto? Buyer { get; set; }
 }

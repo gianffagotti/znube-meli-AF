@@ -11,8 +11,7 @@ public static class NoteUtils
     public static bool IsAutoNote(string? note)
     {
         if (string.IsNullOrWhiteSpace(note)) return false;
-        return note!.StartsWith(AutoTag, StringComparison.Ordinal)
-            || note.StartsWith("[AUTO]", StringComparison.Ordinal);
+        return note!.StartsWith(AutoTag, StringComparison.Ordinal);
     }
 
     public static bool ContainsAutoNote(IEnumerable<string> notes)

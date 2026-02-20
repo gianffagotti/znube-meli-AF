@@ -41,15 +41,7 @@ public class MeliApiClient : IMeliApiClient
         if (res.StatusCode == HttpStatusCode.NotFound) return null;
         if (!res.IsSuccessStatusCode) res.EnsureSuccessStatusCode();
         var json = await res.Content.ReadAsStringAsync(cancellationToken);
-        var dto = JsonSerializer.Deserialize<MeliOrderDto>(json, JsonOptions);
-        if (dto != null && dto.Id == null)
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("id", out var idEl))
-                dto.Id = idEl.ValueKind == JsonValueKind.Number ? idEl.GetRawText() : idEl.GetString();
-        }
-        return dto;
+        return JsonSerializer.Deserialize<MeliOrderDto>(json, JsonOptions);
     }
 
     public async Task<List<MeliOrderDto>> GetPackOrdersAsync(string packId, CancellationToken cancellationToken = default)
@@ -60,33 +52,11 @@ public class MeliApiClient : IMeliApiClient
         if (!res.IsSuccessStatusCode) return new List<MeliOrderDto>();
         var json = await res.Content.ReadAsStringAsync(cancellationToken);
         var pack = JsonSerializer.Deserialize<MeliPackDto>(json, JsonOptions);
-        if (pack?.Orders != null && pack.Orders.Count > 0)
-            return pack.Orders;
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        var orderIds = new List<string>();
-        if (root.TryGetProperty("orders", out var ordersEl) && ordersEl.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var entry in ordersEl.EnumerateArray())
-            {
-                if (entry.ValueKind == JsonValueKind.Object && entry.TryGetProperty("id", out var idEl))
-                {
-                    var idStr = idEl.ValueKind == JsonValueKind.Number ? idEl.GetRawText() : idEl.GetString();
-                    if (!string.IsNullOrWhiteSpace(idStr)) orderIds.Add(idStr!);
-                }
-                else if (entry.ValueKind == JsonValueKind.Number)
-                    orderIds.Add(entry.GetRawText());
-                else if (entry.ValueKind == JsonValueKind.String)
-                {
-                    var idStr = entry.GetString();
-                    if (!string.IsNullOrWhiteSpace(idStr)) orderIds.Add(idStr!);
-                }
-            }
-        }
-        if (orderIds.Count == 0) return new List<MeliOrderDto>();
+        var orderIds = pack?.Orders.Where(o => o.Id is not null).Select(o => o.Id!) ?? [];
+        if (!orderIds.Any()) return [];
         var tasks = orderIds.Select(id => GetOrderAsync(id, cancellationToken)).ToArray();
         var orders = await Task.WhenAll(tasks);
-        return orders.Where(o => o != null).Cast<MeliOrderDto>().ToList();
+        return [.. orders.Where(o => o != null).Cast<MeliOrderDto>()];
     }
 
     public async Task<bool> CreateOrderNoteAsync(string orderId, string note, CancellationToken cancellationToken = default)

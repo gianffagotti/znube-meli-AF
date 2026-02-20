@@ -314,7 +314,8 @@ public class WebhookNotificationFunction
         var order = orderDto?.ToOrder();
         var executionKey = !string.IsNullOrWhiteSpace(order?.PackId) ? order.PackId : orderId;
 
-        if (!await _orderExecutionStore.TryStartExecutionAsync(executionKey))
+        var dryRun = EnvVars.GetBool(EnvVars.Keys.DryRun, false);
+        if (!dryRun && !await _orderExecutionStore.TryStartExecutionAsync(executionKey))
         {
             _logger.LogDebug("Order/Pack {Key} already locked or done. Returning 200 OK.", executionKey);
             return req.CreateResponse(HttpStatusCode.OK);

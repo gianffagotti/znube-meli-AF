@@ -52,7 +52,7 @@ public class PackProcessor
         if (orderDtos.Count == 0)
             return (null, null);
         var orders = orderDtos.Select(d => d.ToOrder()).ToList();
-        var last = orders.OrderBy(o => o.DateCreatedUtc ?? DateTimeOffset.MinValue).ThenBy(o => NoteUtils.TryParseLong(o.Id)).Last();
+        var last = orders.Last();
         if (string.IsNullOrWhiteSpace(last.Id))
             return (null, null);
 

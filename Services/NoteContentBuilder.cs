@@ -11,10 +11,10 @@ public class NoteContentBuilder : INoteContentBuilder
 {
     private const int MaxNoteLength = 300;
     /// <summary>Prefix [A] + space = 4 chars. Spec 02. Usable body budget = 296.</summary>
-    private const string NotePrefix = "[A] ";
+    private const string NotePrefix = $"{NoteUtils.AutoTag} ";
     private const int UsableBudget = 296;
     /// <summary>TOC line for sacrifice step 1. Spec: "(otros en 24hs)".</summary>
-    private const string TocLine = "(otros en 24hs)";
+    private const string TocLine = "(TOC)";
     private const int MaxDetailedProducts = 9;
 
     private readonly ILogger<NoteContentBuilder>? _logger;
