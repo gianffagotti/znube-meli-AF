@@ -40,6 +40,8 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddScoped<IMeliApiClient, MeliApiClient>();
         services.AddScoped<IZnubeApiClient, ZnubeApiClient>();
         services.AddScoped<IZnubeAllocationService, ZnubeAllocationService>();
+        services.AddScoped<IOrderItemRuleResolver, OrderItemRuleResolver>();
+        services.AddScoped<IOrderItemExpander, OrderItemExpander>();
         services.AddScoped<INoteContentBuilder, NoteContentBuilder>();
         services.AddScoped<INotePersisterService, NotePersisterService>();
         services.AddSingleton<IOrderExecutionStore, OrderExecutionStore>();

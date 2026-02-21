@@ -20,7 +20,14 @@ public static class MeliOrderDtoExtensions
             if (string.IsNullOrEmpty(title)) title = "(sin título)";
             var sku = oi.Item?.SellerSku ?? oi.SellerSku;
             var qty = oi.Quantity <= 0 ? 1 : oi.Quantity;
-            items.Add(new MeliOrderItem { Title = title!, SellerSku = sku, Quantity = qty });
+            items.Add(new MeliOrderItem
+            {
+                Title = title!,
+                SellerSku = sku,
+                ItemId = oi.Item?.Id,
+                TargetSku = sku,
+                Quantity = qty
+            });
         }
 
         DateTimeOffset? dateCreatedUtc = null;

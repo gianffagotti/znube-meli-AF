@@ -7,6 +7,8 @@ public static class NoteUtils
 {
     /// <summary>Current prefix for new notes. Spec 02: [A] (4 chars with space).</summary>
     public const string AutoTag = "[A]";
+    /// <summary>Special assignment tag to render variant lines (PACK DynamicSize).</summary>
+    public const string VariantAssignment = "__VARIANTS__";
 
     public static bool IsAutoNote(string? note)
     {

@@ -1,6 +1,7 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Dtos;
 using Microsoft.Extensions.Logging;
 
 namespace meli_znube_integration.Services;
@@ -37,112 +38,47 @@ public class PackProcessor
     /// Processes a single order or pack (note + optional message). Locking is handled by the caller (OrderExecutionStore in Webhook).
     /// Flow: TryStartExecution -> Process -> MarkDone. Spec 02.
     /// </summary>
-    public async Task<(string? OrderIdWritten, string? NoteText)> ProcessAsync(string orderIdFromWebhook)
+    public async Task<(string? OrderIdWritten, string? NoteText)> ProcessAsync(string orderIdFromWebhook, MeliOrderDto? orderDto = null)
     {
-        var orderDto = await _meli.GetOrderAsync(orderIdFromWebhook);
-        var order = orderDto?.ToOrder();
+        if (orderDto == null)
+            return (null, null);
+
+        var order = orderDto.ToOrder();
         if (order == null || order.DateCreatedUtc < DateTime.UtcNow.AddHours(-24))
             return (null, null);
 
-        if (string.IsNullOrWhiteSpace(order.PackId))
-            return await ProcessSingleOrderAsync(orderIdFromWebhook, order);
+        var isPack = !string.IsNullOrWhiteSpace(order.PackId);
+        var packId = order.PackId;
+        var orders = new List<MeliOrder>();
 
-        var packId = order.PackId!;
-        var orderDtos = await _meli.GetPackOrdersAsync(packId);
-        if (orderDtos.Count == 0)
-            return (null, null);
-        var orders = orderDtos.Select(d => d.ToOrder()).ToList();
+        if (isPack)
+        {
+            var orderDtos = await _meli.GetPackOrdersAsync(packId!);
+            if (orderDtos.Count == 0)
+                return (null, null);
+            orders = orderDtos.Select(d => d.ToOrder()).ToList();
+        }
+        else
+        {
+            orders.Add(order);
+        }
+
         var last = orders.Last();
         if (string.IsNullOrWhiteSpace(last.Id))
             return (null, null);
 
-        var input = await BuildNoteBodyInputForPackAsync(orders, last);
-        if (input == null || (input.Allocations.Count == 0 && string.IsNullOrWhiteSpace(input.Zone) && !input.AddToc))
-            return (null, null);
-
-        var body = _noteContentBuilder.BuildBody(input);
-        if (string.IsNullOrWhiteSpace(body))
-            return (null, null);
-        var final = _noteContentBuilder.BuildFinalNote(body);
-
-        var upserted = false;
-        if (UpsertOrderNoteEnabled)
-            upserted = await _notePersisterService.CreateOrderNoteAsync(last.Id!, final);
-        try
+        if (!isPack)
         {
-            if (upserted && SendBuyerMessageEnabled)
-            {
-                var buyerNameUpper = BuildBuyerNameUpper(orders);
-                await _meli.SendMessageAsync(packId, BuildActionGuideMessage(buyerNameUpper));
-            }
+            var notes = await _meli.GetOrderNotesAsync(orderIdFromWebhook);
+            if (NoteUtils.ContainsAutoNote(notes))
+                return (orderIdFromWebhook, null);
         }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para pack {PackId}", packId);
-        }
-        return (last.Id, final);
+
+        var input = await BuildNoteBodyInputAsync(orders, last, isPack);
+        return await WriteNoteAsync(orderIdFromWebhook, orders, last, input, isPack, packId);
     }
 
-    private async Task<(string? OrderIdWritten, string? NoteText)> ProcessSingleOrderAsync(string orderIdFromWebhook, MeliOrder order)
-    {
-        var notes = await _meli.GetOrderNotesAsync(orderIdFromWebhook);
-        if (NoteUtils.ContainsAutoNote(notes))
-            return (orderIdFromWebhook, null);
-
-        var input = await BuildNoteBodyInputForSingleOrderAsync(order);
-        if (input == null)
-            return (orderIdFromWebhook, null);
-        if (input.Allocations.Count == 0 && string.IsNullOrWhiteSpace(input.Zone) && !input.AddToc)
-            return (orderIdFromWebhook, null);
-
-        var body = _noteContentBuilder.BuildBody(input);
-        if (string.IsNullOrWhiteSpace(body))
-            return (orderIdFromWebhook, null);
-        var final = _noteContentBuilder.BuildFinalNote(body);
-
-        bool upserted = false;
-        if (UpsertOrderNoteEnabled)
-            upserted = await _notePersisterService.CreateOrderNoteAsync(orderIdFromWebhook, final);
-        try
-        {
-            if (upserted && SendBuyerMessageEnabled)
-            {
-                var buyerNameUpper = BuildBuyerNameUpper(new[] { order });
-                await _meli.SendMessageAsync(orderIdFromWebhook, BuildActionGuideMessage(buyerNameUpper));
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para order {OrderId}", orderIdFromWebhook);
-        }
-        return (orderIdFromWebhook, final);
-    }
-
-    private async Task<NoteBodyInput?> BuildNoteBodyInputForSingleOrderAsync(MeliOrder order)
-    {
-        string? zone = null;
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(order.ShippingId))
-            {
-                var shipment = await _meli.GetShipmentAsync(order.ShippingId);
-                if (shipment != null)
-                {
-                    if (shipment.IsFull())
-                        return null;
-                    if (shipment.IsFlex())
-                        zone = shipment.GetZone();
-                }
-            }
-        }
-        catch { }
-
-        var allocations = await _znubeAllocationService.GetAllocationsForOrderAsync(order);
-        var addToc = await HasTwoOrMoreOrdersByBuyerIn24hAsync(order);
-        return new NoteBodyInput { Allocations = allocations ?? new List<ZnubeAllocationEntry>(), Zone = zone, AddToc = addToc };
-    }
-
-    private async Task<NoteBodyInput?> BuildNoteBodyInputForPackAsync(List<MeliOrder> orders, MeliOrder last)
+    private async Task<NoteBodyInput?> BuildNoteBodyInputAsync(List<MeliOrder> orders, MeliOrder last, bool isPack)
     {
         string? zone = null;
         try
@@ -159,9 +95,57 @@ public class PackProcessor
         }
         catch { }
 
-        var allocations = await _znubeAllocationService.GetAllocationsForOrdersAsync(orders);
+        var allocations = isPack
+            ? await _znubeAllocationService.GetAllocationsForOrdersAsync(orders)
+            : await _znubeAllocationService.GetAllocationsForOrderAsync(last);
+        if (allocations == null)
+            return null;
+
         var addToc = await HasTwoOrMoreOrdersByBuyerIn24hAsync(last);
-        return new NoteBodyInput { Allocations = allocations ?? new List<ZnubeAllocationEntry>(), Zone = zone, AddToc = addToc };
+        return new NoteBodyInput { Allocations = allocations, Zone = zone, AddToc = addToc };
+    }
+
+    private async Task<(string? OrderIdWritten, string? NoteText)> WriteNoteAsync(
+        string orderIdFromWebhook,
+        List<MeliOrder> orders,
+        MeliOrder last,
+        NoteBodyInput? input,
+        bool isPack,
+        string? packId)
+    {
+        if (input == null)
+            return (orderIdFromWebhook, null);
+        if (input.Allocations.Count == 0 && string.IsNullOrWhiteSpace(input.Zone) && !input.AddToc)
+            return (orderIdFromWebhook, null);
+
+        var body = _noteContentBuilder.BuildBody(input);
+        if (string.IsNullOrWhiteSpace(body))
+            return (orderIdFromWebhook, null);
+        var final = _noteContentBuilder.BuildFinalNote(body);
+
+        bool upserted = false;
+        if (UpsertOrderNoteEnabled)
+            upserted = await _notePersisterService.CreateOrderNoteAsync(last.Id!, final);
+        try
+        {
+            if (upserted && SendBuyerMessageEnabled)
+            {
+                var buyerNameUpper = BuildBuyerNameUpper(orders);
+                var messageTargetId = isPack ? packId : orderIdFromWebhook;
+                if (!string.IsNullOrWhiteSpace(messageTargetId))
+                {
+                    await _meli.SendMessageAsync(messageTargetId!, BuildActionGuideMessage(buyerNameUpper));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (isPack)
+                _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para pack {PackId}", packId);
+            else
+                _logger.LogWarning(ex, "Fallo al enviar mensaje action_guide para order {OrderId}", orderIdFromWebhook);
+        }
+        return (last.Id, final);
     }
 
     private async Task<bool> HasTwoOrMoreOrdersByBuyerIn24hAsync(MeliOrder order)

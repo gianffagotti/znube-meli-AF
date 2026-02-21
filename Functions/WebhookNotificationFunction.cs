@@ -323,7 +323,7 @@ public class WebhookNotificationFunction
 
         try
         {
-            var (orderIdWritten, noteText) = await _processor.ProcessAsync(orderId);
+            var (orderIdWritten, noteText) = await _processor.ProcessAsync(orderId, orderDto);
             _logger.LogInformation("Nota: {NoteText}", noteText);
 
             var res = req.CreateResponse(HttpStatusCode.OK);

@@ -7,121 +7,77 @@ namespace meli_znube_integration.Services;
 public class ZnubeAllocationService : IZnubeAllocationService
 {
     private readonly IZnubeApiClient _znubeApiClient;
+    private readonly IOrderItemExpander _orderItemExpander;
+    private const string PackDynamicRuleType = "PACK_DYNAMIC";
 
-    public ZnubeAllocationService(IZnubeApiClient znubeApiClient)
+    public ZnubeAllocationService(IZnubeApiClient znubeApiClient, IOrderItemExpander orderItemExpander)
     {
         _znubeApiClient = znubeApiClient;
+        _orderItemExpander = orderItemExpander;
     }
 
-    public async Task<List<ZnubeAllocationEntry>> GetAllocationsForOrderAsync(MeliOrder order, CancellationToken cancellationToken = default)
+    public async Task<List<ZnubeAllocationEntry>?> GetAllocationsForOrderAsync(MeliOrder order, CancellationToken cancellationToken = default)
     {
-        var allocations = new List<ZnubeAllocationEntry>();
         if (order == null || order.Items == null || order.Items.Count == 0)
-            return allocations;
+            return new List<ZnubeAllocationEntry>();
 
-        var skuSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var it in order.Items)
-        {
-            if (!string.IsNullOrWhiteSpace(it.SellerSku))
-                skuSet.Add(it.SellerSku!.Trim());
-        }
+        var resolved = await _orderItemExpander.ExpandItemsAsync(order.Items, cancellationToken);
+        if (resolved == null)
+            return null;
+        var allocations = await BuildAllocationsAsync(resolved, cancellationToken);
+        return allocations;
+    }
 
-        var lookupTasks = new Dictionary<string, Task<AssignmentLookup>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var sku in skuSet)
-            lookupTasks[sku] = TryGetAssignmentBySkuAsync(sku, cancellationToken);
+    public async Task<List<ZnubeAllocationEntry>?> GetAllocationsForOrdersAsync(IEnumerable<MeliOrder> orders, CancellationToken cancellationToken = default)
+    {
+        if (orders == null) return new List<ZnubeAllocationEntry>();
+        var orderList = orders.Where(o => o != null && o.Items != null && o.Items.Count > 0).ToList();
+        if (orderList.Count == 0) return new List<ZnubeAllocationEntry>();
 
-        await Task.WhenAll(lookupTasks.Values);
+        var allItems = orderList.SelectMany(o => o.Items!).ToList();
+        var resolved = await _orderItemExpander.ExpandItemsAsync(allItems, cancellationToken);
+        if (resolved == null)
+            return null;
+        var allocations = await BuildAllocationsAsync(resolved, cancellationToken);
+        return allocations;
+    }
 
-        var lookupBySku = new Dictionary<string, AssignmentLookup>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kvp in lookupTasks)
-        {
-            AssignmentLookup value;
-            try { value = kvp.Value.Result; }
-            catch (Exception ex) { value = new AssignmentLookup { ControlledErrorMessage = $"Fallo consulta SKU {kvp.Key}: {ex.Message}" }; }
-            lookupBySku[kvp.Key] = value;
-        }
-
-        var rrIndexByProduct = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var item in order.Items!)
-        {
-            if (item == null) continue;
-            var productLabel = item.Title;
-            AssignmentLookup? lookup = null;
-            if (!string.IsNullOrWhiteSpace(item.SellerSku) && lookupBySku.TryGetValue(item.SellerSku!, out var lkp))
+    private async Task<List<ZnubeAllocationEntry>> BuildAllocationsAsync(List<OrderItemResolved> resolved, CancellationToken cancellationToken)
+    {
+        var variantAllocations = resolved
+            .Where(r => string.Equals(r.RuleType, PackDynamicRuleType, StringComparison.OrdinalIgnoreCase))
+            .Select(r => new ZnubeAllocationEntry
             {
-                lookup = lkp;
-                if (!string.IsNullOrWhiteSpace(lookup.TitleFromZnube))
-                    productLabel = lookup.TitleFromZnube!;
-            }
+                ProductLabel = r.ProductLabel ?? r.Sku,
+                AssignmentName = NoteUtils.VariantAssignment,
+                Quantity = r.Quantity
+            })
+            .ToList();
 
-            int remaining = Math.Max(0, item.Quantity);
+        var skuRequests = resolved
+            .Where(r => !string.Equals(r.RuleType, PackDynamicRuleType, StringComparison.OrdinalIgnoreCase))
+            .Select(r => new SkuRequest { Sku = r.Sku, Quantity = r.Quantity, ProductLabel = r.ProductLabel })
+            .ToList();
 
-            if (lookup != null && lookup.ResourceStocks != null && lookup.ResourceStocks.Count > 0 && remaining > 0)
-            {
-                var ordered = lookup.ResourceStocks
-                    .OrderByDescending(rs => ZnubeLogicExtensions.IsDepositoName(rs.ResourceName))
-                    .ThenByDescending(rs => rs.QuantityForSku)
-                    .ToList();
-
-                bool depositoConStock = ordered.Any(rs => ZnubeLogicExtensions.IsDepositoName(rs.ResourceName) && (int)Math.Floor(rs.QuantityForSku) > 0);
-                if (!depositoConStock)
-                {
-                    var noDeposito = ordered
-                        .Where(rs => !ZnubeLogicExtensions.IsDepositoName(rs.ResourceName) && (int)Math.Floor(rs.QuantityForSku) > 0)
-                        .ToList();
-                    if (noDeposito.Count >= 2 && !string.IsNullOrWhiteSpace(lookup.ProductId))
-                    {
-                        rrIndexByProduct.TryGetValue(lookup.ProductId!, out int idx);
-                        idx = idx % noDeposito.Count;
-                        var rotated = new List<ResourceSkuStock>(noDeposito.Count);
-                        rotated.AddRange(noDeposito.Skip(idx));
-                        rotated.AddRange(noDeposito.Take(idx));
-                        ordered = rotated;
-                        rrIndexByProduct[lookup.ProductId!] = (idx + 1) % noDeposito.Count;
-                    }
-                }
-
-                foreach (var rs in ordered)
-                {
-                    if (remaining <= 0) break;
-                    var available = rs.QuantityForSku > 0 ? (int)Math.Floor(rs.QuantityForSku) : 0;
-                    if (available <= 0) continue;
-                    var take = Math.Min(remaining, available);
-                    if (take > 0)
-                    {
-                        allocations.Add(new ZnubeAllocationEntry { ProductLabel = productLabel, AssignmentName = rs.ResourceName, Quantity = take });
-                        remaining -= take;
-                    }
-                }
-            }
-
-            if (remaining > 0)
-            {
-                string assignment = ResolveFallbackAssignment(lookup);
-                allocations.Add(new ZnubeAllocationEntry { ProductLabel = productLabel, AssignmentName = assignment, Quantity = remaining });
-            }
-        }
+        var allocations = await GetAllocationsForSkusAsync(skuRequests, cancellationToken);
+        if (variantAllocations.Count > 0)
+            allocations.AddRange(variantAllocations);
 
         return allocations;
     }
 
-    public async Task<List<ZnubeAllocationEntry>> GetAllocationsForOrdersAsync(IEnumerable<MeliOrder> orders, CancellationToken cancellationToken = default)
+    public async Task<List<ZnubeAllocationEntry>> GetAllocationsForSkusAsync(IEnumerable<SkuRequest> requests, CancellationToken cancellationToken = default)
     {
         var allocations = new List<ZnubeAllocationEntry>();
-        if (orders == null) return allocations;
-        var orderList = orders.Where(o => o != null && o.Items != null && o.Items.Count > 0).ToList();
-        if (orderList.Count == 0) return allocations;
+        if (requests == null) return allocations;
 
-        var skuSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var o in orderList)
-        {
-            foreach (var it in o.Items!)
-            {
-                if (!string.IsNullOrWhiteSpace(it.SellerSku))
-                    skuSet.Add(it.SellerSku!.Trim());
-            }
-        }
+        var requestList = requests
+            .Where(r => r != null && !string.IsNullOrWhiteSpace(r.Sku) && r.Quantity > 0)
+            .Select(r => new SkuRequest { Sku = r.Sku.Trim(), Quantity = r.Quantity, ProductLabel = r.ProductLabel })
+            .ToList();
+        if (requestList.Count == 0) return allocations;
+
+        var skuSet = new HashSet<string>(requestList.Select(r => r.Sku), StringComparer.OrdinalIgnoreCase);
 
         var lookupTasks = new Dictionary<string, Task<AssignmentLookup>>(StringComparer.OrdinalIgnoreCase);
         foreach (var sku in skuSet)
@@ -155,77 +111,73 @@ public class ZnubeAllocationService : IZnubeAllocationService
 
         var rrIndexByProduct = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var o in orderList)
+        foreach (var request in requestList)
         {
-            foreach (var item in o.Items!)
+            var productLabel = request.ProductLabel ?? request.Sku;
+            AssignmentLookup? lookup = null;
+            if (lookupBySku.TryGetValue(request.Sku, out var lkp))
             {
-                if (item == null) continue;
-                var productLabel = item.Title;
-                AssignmentLookup? lookup = null;
-                if (!string.IsNullOrWhiteSpace(item.SellerSku) && lookupBySku.TryGetValue(item.SellerSku!, out var lkp))
+                lookup = lkp;
+                if (string.IsNullOrWhiteSpace(request.ProductLabel) && !string.IsNullOrWhiteSpace(lookup.TitleFromZnube))
+                    productLabel = lookup.TitleFromZnube!;
+            }
+
+            int remaining = Math.Max(0, request.Quantity);
+
+            if (remaining > 0 && availableBySku.TryGetValue(request.Sku, out var globalStocks) && globalStocks != null && globalStocks.Count > 0)
+            {
+                var withIndex = globalStocks.Select((s, idx) => new { s.ResourceName, s.Available, Index = idx }).ToList();
+                var depositoFirst = withIndex
+                    .OrderByDescending(x => ZnubeLogicExtensions.IsDepositoName(x.ResourceName) && x.Available > 0)
+                    .ThenByDescending(x => x.Available)
+                    .ThenBy(x => x.Index)
+                    .ToList();
+
+                List<(string ResourceName, int Available)> ordered;
+                bool depositoConStock = depositoFirst.Any(x => ZnubeLogicExtensions.IsDepositoName(x.ResourceName) && x.Available > 0);
+                if (!depositoConStock && lookup != null)
                 {
-                    lookup = lkp;
-                    if (!string.IsNullOrWhiteSpace(lookup.TitleFromZnube))
-                        productLabel = lookup.TitleFromZnube!;
-                }
-
-                int remaining = Math.Max(0, item.Quantity);
-
-                if (remaining > 0 && !string.IsNullOrWhiteSpace(item.SellerSku) && availableBySku.TryGetValue(item.SellerSku!, out var globalStocks) && globalStocks != null && globalStocks.Count > 0)
-                {
-                    var withIndex = globalStocks.Select((s, idx) => new { s.ResourceName, s.Available, Index = idx }).ToList();
-                    var depositoFirst = withIndex
-                        .OrderByDescending(x => ZnubeLogicExtensions.IsDepositoName(x.ResourceName) && x.Available > 0)
-                        .ThenByDescending(x => x.Available)
-                        .ThenBy(x => x.Index)
-                        .ToList();
-
-                    List<(string ResourceName, int Available)> ordered;
-                    bool depositoConStock = depositoFirst.Any(x => ZnubeLogicExtensions.IsDepositoName(x.ResourceName) && x.Available > 0);
-                    if (!depositoConStock && lookup != null)
+                    var noDeposito = depositoFirst.Where(x => !ZnubeLogicExtensions.IsDepositoName(x.ResourceName) && x.Available > 0).ToList();
+                    if (noDeposito.Count >= 2 && !string.IsNullOrWhiteSpace(lookup.ProductId))
                     {
-                        var noDeposito = depositoFirst.Where(x => !ZnubeLogicExtensions.IsDepositoName(x.ResourceName) && x.Available > 0).ToList();
-                        if (noDeposito.Count >= 2 && !string.IsNullOrWhiteSpace(lookup.ProductId))
-                        {
-                            rrIndexByProduct.TryGetValue(lookup.ProductId!, out int idx);
-                            idx = idx % noDeposito.Count;
-                            var rotated = new List<(string ResourceName, int Available)>(noDeposito.Count);
-                            rotated.AddRange(noDeposito.Skip(idx).Select(x => (x.ResourceName, x.Available)));
-                            rotated.AddRange(noDeposito.Take(idx).Select(x => (x.ResourceName, x.Available)));
-                            ordered = rotated;
-                            rrIndexByProduct[lookup.ProductId!] = (idx + 1) % noDeposito.Count;
-                        }
-                        else
-                            ordered = depositoFirst.Select(x => (x.ResourceName, x.Available)).ToList();
+                        rrIndexByProduct.TryGetValue(lookup.ProductId!, out int idx);
+                        idx = idx % noDeposito.Count;
+                        var rotated = new List<(string ResourceName, int Available)>(noDeposito.Count);
+                        rotated.AddRange(noDeposito.Skip(idx).Select(x => (x.ResourceName, x.Available)));
+                        rotated.AddRange(noDeposito.Take(idx).Select(x => (x.ResourceName, x.Available)));
+                        ordered = rotated;
+                        rrIndexByProduct[lookup.ProductId!] = (idx + 1) % noDeposito.Count;
                     }
                     else
                         ordered = depositoFirst.Select(x => (x.ResourceName, x.Available)).ToList();
+                }
+                else
+                    ordered = depositoFirst.Select(x => (x.ResourceName, x.Available)).ToList();
 
-                    for (int i = 0; i < ordered.Count && remaining > 0; i++)
+                for (int i = 0; i < ordered.Count && remaining > 0; i++)
+                {
+                    var resName = ordered[i].ResourceName;
+                    for (int g = 0; g < globalStocks.Count && remaining > 0; g++)
                     {
-                        var resName = ordered[i].ResourceName;
-                        for (int g = 0; g < globalStocks.Count && remaining > 0; g++)
+                        if (!string.Equals(globalStocks[g].ResourceName, resName, StringComparison.Ordinal)) continue;
+                        var available = globalStocks[g].Available;
+                        if (available <= 0) break;
+                        var take = Math.Min(remaining, available);
+                        if (take > 0)
                         {
-                            if (!string.Equals(globalStocks[g].ResourceName, resName, StringComparison.Ordinal)) continue;
-                            var available = globalStocks[g].Available;
-                            if (available <= 0) break;
-                            var take = Math.Min(remaining, available);
-                            if (take > 0)
-                            {
-                                allocations.Add(new ZnubeAllocationEntry { ProductLabel = productLabel, AssignmentName = resName, Quantity = take });
-                                remaining -= take;
-                                globalStocks[g] = (globalStocks[g].ResourceName, globalStocks[g].Available - take);
-                            }
-                            break;
+                            allocations.Add(new ZnubeAllocationEntry { ProductLabel = productLabel, AssignmentName = resName, Quantity = take });
+                            remaining -= take;
+                            globalStocks[g] = (globalStocks[g].ResourceName, globalStocks[g].Available - take);
                         }
+                        break;
                     }
                 }
+            }
 
-                if (remaining > 0)
-                {
-                    string assignment = ResolveFallbackAssignment(lookup);
-                    allocations.Add(new ZnubeAllocationEntry { ProductLabel = productLabel, AssignmentName = assignment, Quantity = remaining });
-                }
+            if (remaining > 0)
+            {
+                string assignment = ResolveFallbackAssignment(lookup);
+                allocations.Add(new ZnubeAllocationEntry { ProductLabel = productLabel, AssignmentName = assignment, Quantity = remaining });
             }
         }
 

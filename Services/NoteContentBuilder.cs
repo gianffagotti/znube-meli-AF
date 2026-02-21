@@ -105,10 +105,30 @@ public class NoteContentBuilder : INoteContentBuilder
         var result = new List<string>();
         if (allocations == null) return result;
 
+        var variantLines = new List<string>();
+        var normalAllocations = new List<ZnubeAllocationEntry>();
+        foreach (var a in allocations)
+        {
+            if (a == null) continue;
+            if (string.Equals(a.AssignmentName, NoteUtils.VariantAssignment, StringComparison.Ordinal))
+                variantLines.Add(a.Quantity > 1 ? $"{a.ProductLabel} x{a.Quantity}" : (a.ProductLabel ?? string.Empty));
+            else
+                normalAllocations.Add(a);
+        }
+
+        foreach (var line in variantLines)
+        {
+            if (!string.IsNullOrWhiteSpace(line))
+                result.Add(line);
+        }
+
+        if (normalAllocations.Count == 0)
+            return result;
+
         var assignmentOrder = new List<string>();
         var byAssignment = new Dictionary<string, AssignmentGroup>(StringComparer.Ordinal);
 
-        foreach (var a in allocations)
+        foreach (var a in normalAllocations)
         {
             if (a == null) continue;
             var assignment = a.AssignmentName ?? string.Empty;

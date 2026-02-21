@@ -743,5 +743,7 @@ public class MeliOrderItem
 {
     public string Title { get; set; } = string.Empty;
     public string? SellerSku { get; set; }
+    public string? ItemId { get; set; }
+    public string? TargetSku { get; set; }
     public int Quantity { get; set; } = 1;
 }
