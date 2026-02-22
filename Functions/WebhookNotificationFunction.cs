@@ -311,8 +311,7 @@ public class WebhookNotificationFunction
         // Resolve execution key: PackId (group) or OrderId (single). Spec 02.
         // If GetOrderAsync returns null (order not found), executionKey = orderId; ProcessAsync returns (null,null); we still MarkDoneAsync to avoid stuck executions.
         var orderDto = await _meliClient.GetOrderAsync(orderId);
-        var order = orderDto?.ToOrder();
-        var executionKey = !string.IsNullOrWhiteSpace(order?.PackId) ? order.PackId : orderId;
+        var executionKey = !string.IsNullOrWhiteSpace(orderDto?.PackId) ? orderDto.PackId : orderId;
 
         var dryRun = EnvVars.GetBool(EnvVars.Keys.DryRun, false);
         if (!dryRun && !await _orderExecutionStore.TryStartExecutionAsync(executionKey))

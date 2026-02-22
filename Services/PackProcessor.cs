@@ -67,13 +67,6 @@ public class PackProcessor
         if (string.IsNullOrWhiteSpace(last.Id))
             return (null, null);
 
-        if (!isPack)
-        {
-            var notes = await _meli.GetOrderNotesAsync(orderIdFromWebhook);
-            if (NoteUtils.ContainsAutoNote(notes))
-                return (orderIdFromWebhook, null);
-        }
-
         var input = await BuildNoteBodyInputAsync(orders, last, isPack);
         return await WriteNoteAsync(orderIdFromWebhook, orders, last, input, isPack, packId);
     }
@@ -95,9 +88,7 @@ public class PackProcessor
         }
         catch { }
 
-        var allocations = isPack
-            ? await _znubeAllocationService.GetAllocationsForOrdersAsync(orders)
-            : await _znubeAllocationService.GetAllocationsForOrderAsync(last);
+        var allocations = await _znubeAllocationService.GetAllocationsForOrdersAsync(orders);
         if (allocations == null)
             return null;
 

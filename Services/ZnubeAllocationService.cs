@@ -16,23 +16,11 @@ public class ZnubeAllocationService : IZnubeAllocationService
         _orderItemExpander = orderItemExpander;
     }
 
-    public async Task<List<ZnubeAllocationEntry>?> GetAllocationsForOrderAsync(MeliOrder order, CancellationToken cancellationToken = default)
-    {
-        if (order == null || order.Items == null || order.Items.Count == 0)
-            return new List<ZnubeAllocationEntry>();
-
-        var resolved = await _orderItemExpander.ExpandItemsAsync(order.Items, cancellationToken);
-        if (resolved == null)
-            return null;
-        var allocations = await BuildAllocationsAsync(resolved, cancellationToken);
-        return allocations;
-    }
-
     public async Task<List<ZnubeAllocationEntry>?> GetAllocationsForOrdersAsync(IEnumerable<MeliOrder> orders, CancellationToken cancellationToken = default)
     {
-        if (orders == null) return new List<ZnubeAllocationEntry>();
+        if (orders == null) return [];
         var orderList = orders.Where(o => o != null && o.Items != null && o.Items.Count > 0).ToList();
-        if (orderList.Count == 0) return new List<ZnubeAllocationEntry>();
+        if (orderList.Count == 0) return [];
 
         var allItems = orderList.SelectMany(o => o.Items!).ToList();
         var resolved = await _orderItemExpander.ExpandItemsAsync(allItems, cancellationToken);
@@ -118,7 +106,7 @@ public class ZnubeAllocationService : IZnubeAllocationService
             if (lookupBySku.TryGetValue(request.Sku, out var lkp))
             {
                 lookup = lkp;
-                if (string.IsNullOrWhiteSpace(request.ProductLabel) && !string.IsNullOrWhiteSpace(lookup.TitleFromZnube))
+                if (!string.IsNullOrWhiteSpace(lookup.TitleFromZnube))
                     productLabel = lookup.TitleFromZnube!;
             }
 

@@ -80,27 +80,11 @@ public class OrderItemExpander : IOrderItemExpander
                 return null;
             }
 
-            if (string.Equals(rule.RuleType, FullRuleType, StringComparison.OrdinalIgnoreCase))
-            {
-                if (string.IsNullOrWhiteSpace(rule.TargetSku))
-                    return null;
-
-                resolved.Add(new OrderItemResolved
-                {
-                    Sku = rule.TargetSku,
-                    Quantity = qty,
-                    ProductLabel = item.Title,
-                    OrderItemId = item.ItemId,
-                    RuleType = FullRuleType
-                });
-                continue;
-            }
-
             if (string.Equals(rule.RuleType, PackRuleType, StringComparison.OrdinalIgnoreCase))
             {
                 var mapping = ResolveMapping(rule, item);
                 if (mapping == null) return null;
-                if (string.Equals(mapping.Strategy, "DynamicSize", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(mapping.Strategy, "Dynamic_Size", StringComparison.OrdinalIgnoreCase))
                 {
                     var dynamicResolved = await BuildDynamicSizeResolvedAsync(rule, mapping, item, qty, cancellationToken);
                     if (dynamicResolved == null || dynamicResolved.Count == 0)
