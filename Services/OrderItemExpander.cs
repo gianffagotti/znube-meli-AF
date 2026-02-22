@@ -76,6 +76,20 @@ public class OrderItemExpander : IOrderItemExpander
             var rule = await _ruleResolver.GetRuleAsync(item.ItemId!, cancellationToken);
             if (rule == null)
             {
+                if (!string.IsNullOrWhiteSpace(sku))
+                {
+                    _logger.LogInformation("No hay regla para ItemId {ItemId}. Marcando item sin asignacion.", item.ItemId);
+                    resolved.Add(new OrderItemResolved
+                    {
+                        Sku = sku,
+                        Quantity = qty,
+                        ProductLabel = item.Title,
+                        OrderItemId = item.ItemId,
+                        RuleType = FullRuleType
+                    });
+                    continue;
+                }
+
                 _logger.LogInformation("No hay regla para ItemId {ItemId}. Cancelando nota.", item.ItemId);
                 return null;
             }

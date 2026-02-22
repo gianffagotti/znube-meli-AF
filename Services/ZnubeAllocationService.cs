@@ -101,7 +101,7 @@ public class ZnubeAllocationService : IZnubeAllocationService
 
         foreach (var request in requestList)
         {
-            var productLabel = request.ProductLabel ?? request.Sku;
+            var productLabel = ZnubeLogicExtensions.IsValidSKU(request.Sku) ? request.Sku : request.ProductLabel;
             AssignmentLookup? lookup = null;
             if (lookupBySku.TryGetValue(request.Sku, out var lkp))
             {

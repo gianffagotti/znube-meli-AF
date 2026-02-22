@@ -15,6 +15,14 @@ public static class ZnubeLogicExtensions
         return idx >= 0 ? sku[..idx] : sku;
     }
 
+    public static bool IsValidSKU(string sku)
+    {
+        if (string.IsNullOrWhiteSpace(sku)) return false;
+        var s = NormalizeSellerSku(sku);
+
+        return s.Split('#').Length == 3;
+    }
+
     /// <summary>
     /// Normalizes a seller SKU to the format expected by the Znube API.
     /// </summary>
