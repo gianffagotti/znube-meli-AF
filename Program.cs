@@ -52,6 +52,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddTransient<MeliRateLimitHandler>();
         services.AddSingleton<StockMappingService>();
         services.AddSingleton<StockRuleService>();
+        services.AddSingleton<IDashboardLogService, DashboardLogService>();
         services.AddScoped<IStockSyncSourceService, StockSyncSourceService>();
         services.AddSingleton<ISkuParser, SkuParserService>();
 

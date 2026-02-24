@@ -19,6 +19,10 @@ public class StockRuleDto
     [JsonPropertyName("ruleType")]
     public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
 
+    /// <summary>FULL rules: true if one or more variant SKUs were not found in Znube at save time.</summary>
+    [JsonPropertyName("isIncomplete")]
+    public bool IsIncomplete { get; set; }
+
     /// <summary>PACK rules: default pack size for fallbacks. Spec V2.</summary>
     [JsonPropertyName("defaultPackQuantity")]
     public int DefaultPackQuantity { get; set; } = 1;

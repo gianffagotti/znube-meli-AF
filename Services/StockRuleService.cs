@@ -9,14 +9,40 @@ namespace meli_znube_integration.Services;
 public class StockRuleService
 {
     private readonly TableClient _tableClient;
+    private readonly TableClient _skuIndexClient;
 
     public StockRuleService(IConfiguration configuration)
     {
         var connectionString = EnvVars.GetRequiredString(EnvVars.Keys.AzureStorageConnectionString);
         var tableName = EnvVars.GetRequiredString(EnvVars.Keys.StockRulesTableName);
+        var skuIndexTableName = EnvVars.GetString(EnvVars.Keys.StockSkuIndexTableName, "StockSkuIndex");
 
         _tableClient = new TableClient(connectionString, tableName);
         _tableClient.CreateIfNotExists();
+
+        _skuIndexClient = new TableClient(connectionString, skuIndexTableName);
+        _skuIndexClient.CreateIfNotExists();
+    }
+
+    /// <summary>Normalizes SKU for use as partition key in StockSkuIndex (e.g. upper case, trimmed).</summary>
+    public static string NormalizeSku(string? sku) => (sku ?? "").Trim().ToUpperInvariant();
+
+    /// <summary>Sanitizes a value for use as PartitionKey or RowKey in Azure Table Storage.
+    /// Removes/replaces forbidden characters: / \ # ? and control chars (U+0000–U+001F). Caps length at 1024.</summary>
+    public static string SanitizeTableKey(string? key)
+    {
+        if (string.IsNullOrEmpty(key)) return string.Empty;
+        const int maxKeyLength = 1024;
+        var sanitized = new char[key.Length];
+        var written = 0;
+        for (var i = 0; i < key.Length && written < maxKeyLength; i++)
+        {
+            var c = key[i];
+            if (c == '/' || c == '\\' || c == '#' || c == '?' || (c >= '\u0000' && c <= '\u001F'))
+                c = '_';
+            sanitized[written++] = c;
+        }
+        return new string(sanitized, 0, written);
     }
 
     public async Task SaveRuleAsync(StockRuleDto ruleDto)
@@ -28,12 +54,13 @@ public class StockRuleService
             PartitionKey = sellerId,
             RowKey = ruleDto.TargetItemId,
             RuleType = ruleDto.RuleType,
+            IsIncomplete = ruleDto.IsIncomplete,
             DefaultPackQuantity = ruleDto.DefaultPackQuantity,
             TargetItemId = ruleDto.TargetItemId,
             TargetTitle = ruleDto.TargetTitle,
             TargetThumbnail = ruleDto.TargetThumbnail,
             TargetSku = ruleDto.TargetSku ?? "",
-            ComponentsJson = JsonSerializer.Serialize(ruleDto.Components),
+            ComponentsJson = JsonSerializer.Serialize(ruleDto.Components ?? new List<RuleComponentDto>()),
         };
 
         entity.Mappings = ruleDto.Mappings.Select(m => new RuleVariantMapping
@@ -52,28 +79,53 @@ public class StockRuleService
             }).ToList()
         }).ToList();
 
+        var isFullRule = string.Equals(ruleDto.RuleType, "FULL", StringComparison.OrdinalIgnoreCase)
+            && (ruleDto.Components == null || ruleDto.Components.Count == 0);
+
         // 1. Check if rule exists to clean up old index
         var existingRuleKey = entity.RowKey;
         var existingRule = await GetRuleEntityAsync(sellerId, existingRuleKey);
         if (existingRule != null)
         {
             await DeleteIndexEntriesAsync(existingRule);
+            await DeleteSkuIndexEntriesByTargetAsync(existingRule.TargetItemId);
         }
 
         // 2. Upsert the main rule
         await _tableClient.UpsertEntityAsync(entity, TableUpdateMode.Replace);
 
-        // 3. Insert new index entries
-        foreach (var component in ruleDto.Components)
+        // 3. Maintain indexes
+        if (isFullRule)
         {
-            var indexEntity = new StockSourceIndexEntity
+            // FULL: maintain StockSkuIndex (no StockSourceIndex entries)
+            foreach (var mapping in ruleDto.Mappings)
             {
-                PartitionKey = component.SourceItemId, // Source is PK for Index
-                RowKey = entity.TargetItemId,          // Target is RK for Index
-                RuleType = entity.RuleType,
-                Timestamp = DateTimeOffset.UtcNow
-            };
-            await _tableClient.UpsertEntityAsync(indexEntity, TableUpdateMode.Replace);
+                var normalizedSku = NormalizeSku(mapping.TargetSku);
+                if (string.IsNullOrEmpty(normalizedSku)) continue;
+                var skuIndexEntity = new StockSkuIndexEntity
+                {
+                    PartitionKey = SanitizeTableKey(normalizedSku),
+                    RowKey = SanitizeTableKey(entity.TargetItemId),
+                    RuleType = entity.RuleType,
+                    Timestamp = DateTimeOffset.UtcNow
+                };
+                await _skuIndexClient.UpsertEntityAsync(skuIndexEntity, TableUpdateMode.Replace);
+            }
+        }
+        else
+        {
+            // PACK/COMBO: maintain StockSourceIndex (component-based)
+            foreach (var component in ruleDto.Components ?? new List<RuleComponentDto>())
+            {
+                var indexEntity = new StockSourceIndexEntity
+                {
+                    PartitionKey = SanitizeTableKey(component.SourceItemId),
+                    RowKey = SanitizeTableKey(entity.TargetItemId),
+                    RuleType = entity.RuleType,
+                    Timestamp = DateTimeOffset.UtcNow
+                };
+                await _tableClient.UpsertEntityAsync(indexEntity, TableUpdateMode.Replace);
+            }
         }
     }
 
@@ -82,10 +134,8 @@ public class StockRuleService
         var rule = await GetRuleEntityAsync(sellerId, targetItemId);
         if (rule != null)
         {
-            // 1. Delete index entries
             await DeleteIndexEntriesAsync(rule);
-
-            // 2. Delete main rule
+            await DeleteSkuIndexEntriesByTargetAsync(targetItemId);
             await _tableClient.DeleteEntityAsync(sellerId, targetItemId);
         }
     }
@@ -112,7 +162,8 @@ public class StockRuleService
     public async Task<List<StockSourceIndexEntity>> GetAffectedRulesBySourceAsync(string sourceItemId)
     {
         var indexes = new List<StockSourceIndexEntity>();
-        var query = _tableClient.QueryAsync<StockSourceIndexEntity>(filter: $"PartitionKey eq '{sourceItemId}'");
+        var pk = SanitizeTableKey(sourceItemId).Replace("'", "''");
+        var query = _tableClient.QueryAsync<StockSourceIndexEntity>(filter: $"PartitionKey eq '{pk}'");
 
         await foreach (var index in query)
         {
@@ -120,6 +171,30 @@ public class StockRuleService
         }
 
         return indexes;
+    }
+
+    /// <summary>Gets FULL rules that reference the given SKU (via StockSkuIndex). Used by webhook/worker for SKU-based notifications.</summary>
+    public async Task<List<StockRuleDto>> GetFullRulesBySkuAsync(string sellerId, string sku)
+    {
+        var normalizedSku = NormalizeSku(sku);
+        if (string.IsNullOrEmpty(normalizedSku)) return new List<StockRuleDto>();
+
+        var pk = SanitizeTableKey(normalizedSku).Replace("'", "''");
+        var targetItemIds = new List<string>();
+        var query = _skuIndexClient.QueryAsync<StockSkuIndexEntity>(filter: $"PartitionKey eq '{pk}'");
+        await foreach (var index in query)
+        {
+            targetItemIds.Add(index.RowKey);
+        }
+
+        var rules = new List<StockRuleDto>();
+        foreach (var targetItemId in targetItemIds.Distinct())
+        {
+            var rule = await GetRuleAsync(sellerId, targetItemId);
+            if (rule != null && string.Equals(rule.RuleType, "FULL", StringComparison.OrdinalIgnoreCase))
+                rules.Add(rule);
+        }
+        return rules;
     }
 
     public async Task<StockRuleDto?> GetRuleAsync(string sellerId, string targetItemId)
@@ -153,14 +228,23 @@ public class StockRuleService
             {
                 foreach (var component in components)
                 {
-                    // Index PK = Source, RK = Target
-                    await _tableClient.DeleteEntityAsync(component.SourceItemId, rule.TargetItemId);
+                    await _tableClient.DeleteEntityAsync(SanitizeTableKey(component.SourceItemId), SanitizeTableKey(rule.TargetItemId));
                 }
             }
         }
         catch
         {
             // Ignore deserialization errors or missing components during cleanup
+        }
+    }
+
+    private async Task DeleteSkuIndexEntriesByTargetAsync(string targetItemId)
+    {
+        var rk = SanitizeTableKey(targetItemId).Replace("'", "''");
+        var query = _skuIndexClient.QueryAsync<StockSkuIndexEntity>(filter: $"RowKey eq '{rk}'");
+        await foreach (var index in query)
+        {
+            await _skuIndexClient.DeleteEntityAsync(index.PartitionKey, index.RowKey);
         }
     }
 
@@ -173,6 +257,7 @@ public class StockRuleService
             TargetThumbnail = entity.TargetThumbnail,
             TargetSku = entity.TargetSku,
             RuleType = entity.RuleType,
+            IsIncomplete = entity.IsIncomplete,
             DefaultPackQuantity = entity.DefaultPackQuantity,
             Components = string.IsNullOrEmpty(entity.ComponentsJson)
                 ? new List<RuleComponentDto>()
