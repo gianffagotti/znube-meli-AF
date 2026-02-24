@@ -42,8 +42,16 @@ public class OrderItemExpander : IOrderItemExpander
             if (item == null) continue;
             var qty = item.Quantity <= 0 ? 1 : item.Quantity;
             var sku = item.SellerSku?.Trim();
+            StockRuleDto? rule = null;
 
-            if (!string.IsNullOrWhiteSpace(sku))
+            if (!string.IsNullOrWhiteSpace(item.ItemId))
+            {
+                rule = await _ruleResolver.GetRuleAsync(item.ItemId!, cancellationToken);
+            }
+
+            if ((rule is null ||
+                string.Equals(rule.RuleType, FullRuleType, StringComparison.OrdinalIgnoreCase)) &&
+                !string.IsNullOrWhiteSpace(sku))
             {
                 if (!znubeSkuCache.TryGetValue(sku, out var skuExists))
                 {
@@ -73,7 +81,6 @@ public class OrderItemExpander : IOrderItemExpander
                 return null;
             }
 
-            var rule = await _ruleResolver.GetRuleAsync(item.ItemId!, cancellationToken);
             if (rule == null)
             {
                 if (!string.IsNullOrWhiteSpace(sku))
@@ -97,7 +104,20 @@ public class OrderItemExpander : IOrderItemExpander
             if (string.Equals(rule.RuleType, PackRuleType, StringComparison.OrdinalIgnoreCase))
             {
                 var mapping = ResolveMapping(rule, item);
-                if (mapping == null) return null;
+                if (mapping == null)
+                {
+                    _logger.LogInformation("No hay mapping para ItemId {ItemId}. Marcando item sin asignacion.", item.ItemId);
+                    resolved.Add(new OrderItemResolved
+                    {
+                        Sku = sku ?? "",
+                        Quantity = qty,
+                        ProductLabel = item.Title,
+                        OrderItemId = item.ItemId,
+                        RuleType = FullRuleType
+                    });
+                    continue;
+                }
+
                 if (string.Equals(mapping.Strategy, "Dynamic_Size", StringComparison.OrdinalIgnoreCase))
                 {
                     var dynamicResolved = await BuildDynamicSizeResolvedAsync(rule, mapping, item, qty, cancellationToken);
@@ -139,7 +159,18 @@ public class OrderItemExpander : IOrderItemExpander
                     matches = await BuildComboFallbackMatchesAsync(rule, cancellationToken);
 
                 if (matches == null || matches.Count == 0)
-                    return null;
+                {
+                    _logger.LogInformation("No hay matches para ItemId {ItemId}. Marcando item sin asignacion.", item.ItemId);
+                    resolved.Add(new OrderItemResolved
+                    {
+                        Sku = sku ?? "",
+                        Quantity = qty,
+                        ProductLabel = item.Title,
+                        OrderItemId = item.ItemId,
+                        RuleType = FullRuleType
+                    });
+                    continue;
+                }
 
                 foreach (var match in matches)
                 {
