@@ -15,18 +15,20 @@ public class ZnubeAllocationService : IZnubeAllocationService
         _orderItemExpander = orderItemExpander;
     }
 
-    public async Task<List<ZnubeAllocationEntry>?> GetAllocationsForOrdersAsync(IEnumerable<MeliOrder> orders, CancellationToken cancellationToken = default)
+    public async Task<OrderAllocationResult?> GetAllocationsForOrdersAsync(IEnumerable<MeliOrder> orders, CancellationToken cancellationToken = default)
     {
-        if (orders == null) return [];
+        if (orders == null) return null;
         var orderList = orders.Where(o => o != null && o.Items != null && o.Items.Count > 0).ToList();
-        if (orderList.Count == 0) return [];
+        if (orderList.Count == 0) return null;
 
         var allItems = orderList.SelectMany(o => o.Items!).ToList();
         var resolved = await _orderItemExpander.ExpandItemsAsync(allItems, cancellationToken);
         if (resolved == null)
             return null;
         var allocations = await BuildAllocationsAsync(resolved, cancellationToken);
-        return allocations;
+        var hasPack = resolved.Any(r => string.Equals(r.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase));
+        var hasCombo = resolved.Any(r => string.Equals(r.RuleType, StockRuleTypes.Combo, StringComparison.OrdinalIgnoreCase));
+        return new OrderAllocationResult { Allocations = allocations, HasPack = hasPack, HasCombo = hasCombo };
     }
 
     private async Task<List<ZnubeAllocationEntry>> BuildAllocationsAsync(List<OrderItemResolved> resolved, CancellationToken cancellationToken)

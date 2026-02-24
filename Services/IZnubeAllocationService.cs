@@ -5,6 +5,6 @@ namespace meli_znube_integration.Services;
 
 public interface IZnubeAllocationService
 {
-    Task<List<ZnubeAllocationEntry>?> GetAllocationsForOrdersAsync(IEnumerable<MeliOrder> orders, CancellationToken cancellationToken = default);
+    Task<OrderAllocationResult?> GetAllocationsForOrdersAsync(IEnumerable<MeliOrder> orders, CancellationToken cancellationToken = default);
     Task<List<ZnubeAllocationEntry>> GetAllocationsForSkusAsync(IEnumerable<SkuRequest> requests, CancellationToken cancellationToken = default);
 }

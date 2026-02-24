@@ -12,9 +12,13 @@ public class NoteContentBuilder : INoteContentBuilder
     private const int MaxNoteLength = 300;
     /// <summary>Prefix [A] + space = 4 chars. Spec 02. Usable body budget = 296.</summary>
     private const string NotePrefix = $"{NoteUtils.AutoTag} ";
-    private const int UsableBudget = 296;
-    /// <summary>TOC line for sacrifice step 1. Spec: "(otros en 24hs)".</summary>
+    private readonly int UsableBudget = MaxNoteLength - NotePrefix.Length;
+    /// <summary>Spec 02: asignaciones separadas por " / ", resto con espacios (una sola línea para ML).</summary>
+    private const string AssignmentSeparator = " / ";
+    /// <summary>TOC (otros en 24hs). Usado al agregar y al eliminar en el pipeline.</summary>
     private const string TocLine = "(TOC)";
+    private const string PackTag = "(P)";
+    private const string ComboTag = "(C)";
     private const int MaxDetailedProducts = 9;
 
     private readonly ILogger<NoteContentBuilder>? _logger;
@@ -35,7 +39,20 @@ public class NoteContentBuilder : INoteContentBuilder
         if (input.AddToc)
             lines.Add(TocLine);
 
-        return string.Join("\n", lines);
+        var body = string.Join("\n", lines);
+        var packComboSuffix = BuildPackComboSuffix(input.HasPack, input.HasCombo);
+        if (!string.IsNullOrEmpty(packComboSuffix))
+            body = body + packComboSuffix;
+        return body;
+    }
+
+    /// <summary>Spec 02: sufijos PACK/COMBO → " (P)", " (C)" o " (P) (C)".</summary>
+    private static string BuildPackComboSuffix(bool hasPack, bool hasCombo)
+    {
+        var parts = new List<string>();
+        if (hasPack) parts.Add(PackTag);
+        if (hasCombo) parts.Add(ComboTag);
+        return parts.Count == 0 ? string.Empty : " " + string.Join(" ", parts);
     }
 
     public string BuildFinalNote(string? body)
@@ -44,42 +61,89 @@ public class NoteContentBuilder : INoteContentBuilder
         if (string.IsNullOrEmpty(text))
             return NotePrefix.TrimEnd();
 
-        // Strict truncation pipeline (Spec 02): (1) TOC, (2) Zona, (3) Comprimir, (4) Truncar
-        text = ApplyStrictTruncationPipeline(text);
-        var truncated = SmartTruncate(text, UsableBudget);
-        return NotePrefix + truncated;
+        // Spec 02: pipeline sobre líneas (1) TOC, (2) Zona, (3) Comprimir; luego smart truncate a 296
+        var (assignmentLines, trailerLines) = ParseLines(text);
+        var bodyDisplay = BuildDisplayBody(assignmentLines, trailerLines);
+        bodyDisplay = ApplyStrictTruncationPipeline(assignmentLines, trailerLines, bodyDisplay);
+
+        var truncated = SmartTruncate(bodyDisplay, UsableBudget);
+        var result = NotePrefix + truncated;
+        if (result.Length > MaxNoteLength)
+            result = NotePrefix + SmartTruncate(truncated, MaxNoteLength - NotePrefix.Length);
+        return result.Length > MaxNoteLength ? result.Substring(0, MaxNoteLength) : result;
     }
 
-    /// <summary>Pipeline: remove TOC line → remove zone line → compress assignments → result (smart truncate applied after).</summary>
-    private string ApplyStrictTruncationPipeline(string text)
+    /// <summary>Separa líneas en asignaciones (no empiezan con '(') y trailer (zona, TOC, P/C).</summary>
+    private static (List<string> assignmentLines, List<string> trailerLines) ParseLines(string text)
     {
         var lines = text.Split('\n').Select(l => (l ?? string.Empty).Trim()).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
-        if (lines.Count == 0) return string.Empty;
-
-        string Build() => string.Join("\n", lines);
-        if (Build().Length <= UsableBudget) return Build();
-
-        // (1) Eliminar Tag (TOC)
-        var tocIdx = lines.FindIndex(l => l.Equals(TocLine, StringComparison.Ordinal) || l.Equals("(TOC)", StringComparison.Ordinal));
-        if (tocIdx >= 0)
+        var assignmentLines = new List<string>();
+        var trailerLines = new List<string>();
+        foreach (var line in lines)
         {
-            lines.RemoveAt(tocIdx);
-            if (Build().Length <= UsableBudget) return Build();
+            if (line.StartsWith("(", StringComparison.Ordinal))
+                trailerLines.Add(line);
+            else
+                assignmentLines.Add(line);
+        }
+        return (assignmentLines, trailerLines);
+    }
+
+    /// <summary>Spec 02: una sola línea para ML — asignaciones con " / ", resto con espacio.</summary>
+    private static string BuildDisplayBody(List<string> assignmentLines, List<string> trailerLines)
+    {
+        var body = string.Join(AssignmentSeparator, assignmentLines);
+        if (trailerLines.Count > 0)
+            body = body + " " + string.Join(" ", trailerLines);
+        return body;
+    }
+
+    /// <summary>Spec 02: (1) quitar TOC, (2) quitar zona, (3) quitar asignaciones desde el final hasta ≤ 296.</summary>
+    private string ApplyStrictTruncationPipeline(List<string> assignmentLines, List<string> trailerLines, string currentDisplay)
+    {
+        if (currentDisplay.Length <= UsableBudget) return currentDisplay;
+
+        // (1) Eliminar tag TOC (quitar solo el token, no la línea si tiene también (P)/(C))
+        for (int i = 0; i < trailerLines.Count; i++)
+        {
+            var line = trailerLines[i];
+            if (!line.Contains(TocLine, StringComparison.Ordinal)) continue;
+            var removed = line.Replace(TocLine, "").Trim();
+            while (removed.Contains("  ", StringComparison.Ordinal))
+                removed = removed.Replace("  ", " ", StringComparison.Ordinal);
+            if (string.IsNullOrEmpty(removed))
+                trailerLines.RemoveAt(i);
+            else
+                trailerLines[i] = removed;
+            currentDisplay = BuildDisplayBody(assignmentLines, trailerLines);
+            if (currentDisplay.Length <= UsableBudget) return currentDisplay;
+            break;
         }
 
-        // (2) Eliminar Zona — remove last line that looks like (zone)
-        var zoneIdx = lines.FindLastIndex(l => l.StartsWith("(", StringComparison.Ordinal) && l.EndsWith(")", StringComparison.Ordinal) && l.Length > 2);
+        // (2) Eliminar zona — línea que es un solo token (xxx), no (P)/(C)/(TOC); no tocar "(Villa Martelli) (P)"
+        var zoneIdx = trailerLines.FindIndex(l =>
+        {
+            if (!l.StartsWith("(", StringComparison.Ordinal) || !l.EndsWith(")", StringComparison.Ordinal) || l.Length <= 2) return false;
+            if (l.Equals(PackTag, StringComparison.Ordinal) || l.Equals(ComboTag, StringComparison.Ordinal) || l.Equals(TocLine, StringComparison.Ordinal)) return false;
+            var firstClose = l.IndexOf(')');
+            if (firstClose < 0 || firstClose != l.Length - 1) return false;
+            return true;
+        });
         if (zoneIdx >= 0)
         {
-            lines.RemoveAt(zoneIdx);
-            if (Build().Length <= UsableBudget) return Build();
+            trailerLines.RemoveAt(zoneIdx);
+            currentDisplay = BuildDisplayBody(assignmentLines, trailerLines);
+            if (currentDisplay.Length <= UsableBudget) return currentDisplay;
         }
 
-        // (3) Comprimir Asignaciones — drop last lines until under budget
-        while (lines.Count > 1 && Build().Length > UsableBudget)
-            lines.RemoveAt(lines.Count - 1);
+        // (3) Comprimir asignaciones — quitar líneas desde el final
+        while (assignmentLines.Count > 1 && currentDisplay.Length > UsableBudget)
+        {
+            assignmentLines.RemoveAt(assignmentLines.Count - 1);
+            currentDisplay = BuildDisplayBody(assignmentLines, trailerLines);
+        }
 
-        return Build();
+        return currentDisplay;
     }
 
     private static string SmartTruncate(string text, int max)
@@ -93,6 +157,7 @@ public class NoteContentBuilder : INoteContentBuilder
         return cut;
     }
 
+    /// <summary>Spec 02: compactar cuerpo (trim por línea, quitar vacías).</summary>
     private static string Compact(string text)
     {
         if (string.IsNullOrEmpty(text)) return string.Empty;

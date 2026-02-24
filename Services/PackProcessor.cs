@@ -88,12 +88,19 @@ public class PackProcessor
         }
         catch { }
 
-        var allocations = await _znubeAllocationService.GetAllocationsForOrdersAsync(orders);
-        if (allocations == null)
+        var allocationResult = await _znubeAllocationService.GetAllocationsForOrdersAsync(orders);
+        if (allocationResult == null)
             return null;
 
         var addToc = await HasTwoOrMoreOrdersByBuyerIn24hAsync(last);
-        return new NoteBodyInput { Allocations = allocations, Zone = zone, AddToc = addToc };
+        return new NoteBodyInput
+        {
+            Allocations = allocationResult.Allocations,
+            Zone = zone,
+            AddToc = addToc,
+            HasPack = allocationResult.HasPack,
+            HasCombo = allocationResult.HasCombo
+        };
     }
 
     private async Task<(string? OrderIdWritten, string? NoteText)> WriteNoteAsync(
