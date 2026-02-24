@@ -79,7 +79,7 @@ public class StockRuleService
             }).ToList()
         }).ToList();
 
-        var isFullRule = string.Equals(ruleDto.RuleType, "FULL", StringComparison.OrdinalIgnoreCase)
+        var isFullRule = StockRuleTypes.IsFull(ruleDto.RuleType)
             && (ruleDto.Components == null || ruleDto.Components.Count == 0);
 
         // 1. Check if rule exists to clean up old index
@@ -191,7 +191,7 @@ public class StockRuleService
         foreach (var targetItemId in targetItemIds.Distinct())
         {
             var rule = await GetRuleAsync(sellerId, targetItemId);
-            if (rule != null && string.Equals(rule.RuleType, "FULL", StringComparison.OrdinalIgnoreCase))
+            if (rule != null && StockRuleTypes.IsFull(rule.RuleType))
                 rules.Add(rule);
         }
         return rules;

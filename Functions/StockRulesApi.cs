@@ -76,8 +76,7 @@ public class StockRulesApi
         }
     }
 
-    private static readonly HashSet<string> ValidRuleTypes = new(StringComparer.OrdinalIgnoreCase)
-        { "FULL", "PACK", "COMBO" };
+    private static readonly IReadOnlySet<string> ValidRuleTypes = StockRuleTypes.ValidRuleTypes;
 
     [Function("UpsertStockRule")]
     public async Task<HttpResponseData> UpsertRule(
@@ -92,7 +91,7 @@ public class StockRulesApi
             }
 
             var ruleType = (ruleDto.RuleType ?? string.Empty).Trim();
-            if (string.IsNullOrEmpty(ruleType) || !ValidRuleTypes.Contains(ruleType))
+            if (!StockRuleTypes.IsValid(ruleType))
             {
                 _logger.LogWarning("UpsertStockRule: ruleType inválido '{RuleType}'. Valores permitidos: FULL, PACK, COMBO.", ruleDto.RuleType);
                 var badResponse = req.CreateResponse(HttpStatusCode.BadRequest);
@@ -100,7 +99,7 @@ public class StockRulesApi
                 return badResponse;
             }
 
-            if (ruleType.Equals("PACK", StringComparison.OrdinalIgnoreCase) || ruleType.Equals("COMBO", StringComparison.OrdinalIgnoreCase))
+            if (StockRuleTypes.IsPackOrCombo(ruleType))
             {
                 if (ruleDto.Components == null || ruleDto.Components.Count == 0)
                 {

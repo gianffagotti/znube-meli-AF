@@ -268,7 +268,7 @@ public class WebhookNotificationFunction
         {
             if (!string.IsNullOrWhiteSpace(variation.SellerSku)) return variation.SellerSku.ToUpper();
 
-            var skuAttr = variation.Attributes.FirstOrDefault(a => a.Id == "SELLER_SKU");
+            var skuAttr = variation.Attributes.FirstOrDefault(a => a.Id == MeliConstants.SellerSkuAttributeId);
             if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.ToUpper();
 
             if (!string.IsNullOrWhiteSpace(variation.SellerCustomField)) return variation.SellerCustomField.ToUpper();
@@ -277,7 +277,7 @@ public class WebhookNotificationFunction
         {
             if (!string.IsNullOrWhiteSpace(item.SellerSku)) return item.SellerSku.ToUpper(); // Assuming SellerSku exists on Item model, if not check attributes/custom field
 
-            var skuAttr = item.Attributes.FirstOrDefault(a => a.Id == "SELLER_SKU");
+            var skuAttr = item.Attributes.FirstOrDefault(a => a.Id == MeliConstants.SellerSkuAttributeId);
             if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.ToUpper();
             
             if (!string.IsNullOrWhiteSpace(item.SellerCustomField)) return item.SellerCustomField.ToUpper();
@@ -402,7 +402,7 @@ public class WebhookNotificationFunction
                         var sourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule);
                         if (sourceItems.Count == 0) continue;
 
-                        await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, "FULL", fromWorker: false, ct);
+                        await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, StockRuleTypes.Full, fromWorker: false, ct);
 
                         var finalTargetItemId = await ResolveTargetItemIdAsync(sellerId, rule.TargetItemId);
                         if (string.IsNullOrWhiteSpace(finalTargetItemId)) continue;
@@ -460,7 +460,7 @@ public class WebhookNotificationFunction
                 foreach (var comp in components)
                 {
                     string itemId = comp.SourceItemId;
-                    if (!itemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
+                    if (!itemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
                     {
                         var upSearch = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = comp.SourceItemId });
                         var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
@@ -507,7 +507,7 @@ public class WebhookNotificationFunction
     private async Task<string?> ResolveTargetItemIdAsync(string sellerId, string targetItemId)
     {
         if (string.IsNullOrWhiteSpace(targetItemId)) return null;
-        if (targetItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase)) return targetItemId;
+        if (targetItemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase)) return targetItemId;
         var upSearch = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = targetItemId });
         return upSearch?.Results?.FirstOrDefault()?.Id;
     }

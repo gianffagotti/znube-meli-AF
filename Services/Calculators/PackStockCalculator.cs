@@ -1,3 +1,4 @@
+using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 
 namespace meli_znube_integration.Services.Calculators;
@@ -9,7 +10,7 @@ namespace meli_znube_integration.Services.Calculators;
 /// </summary>
 public class PackStockCalculator : IStockCalculator
 {
-    public string RuleType => "PACK";
+    public string RuleType => StockRuleTypes.Pack;
 
     /// <summary>Split by '#', take last segment (trimmed). Null/empty or no '#' → null. Used for DynamicSize and CODIGO#COLOR#TALLE-style SKUs.</summary>
     public static string? ParseSizeFromSku(string? sku)

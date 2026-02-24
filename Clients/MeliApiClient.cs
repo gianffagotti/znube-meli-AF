@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Models.Dtos;
 
@@ -114,7 +115,7 @@ public class MeliApiClient : IMeliApiClient
         return JsonSerializer.Deserialize<MeliSearchResponseDto>(json, JsonOptions);
     }
 
-    public async Task<bool> SendMessageAsync(string packOrOrderId, string text, string optionId = "OTHER", CancellationToken cancellationToken = default)
+    public async Task<bool> SendMessageAsync(string packOrOrderId, string text, string optionId = MeliConstants.MessageOptionIdOther, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(packOrOrderId) || string.IsNullOrWhiteSpace(text)) return false;
         var client = GetClient();

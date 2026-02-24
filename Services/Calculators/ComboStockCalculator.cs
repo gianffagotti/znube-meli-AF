@@ -1,3 +1,4 @@
+using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 
 namespace meli_znube_integration.Services.Calculators;
@@ -8,7 +9,7 @@ namespace meli_znube_integration.Services.Calculators;
 /// </summary>
 public class ComboStockCalculator : IStockCalculator
 {
-    public string RuleType => "COMBO";
+    public string RuleType => StockRuleTypes.Combo;
 
     public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, MeliItem targetItem, List<MeliItem> sourceItems)
     {

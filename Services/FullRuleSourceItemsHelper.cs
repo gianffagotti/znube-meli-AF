@@ -1,3 +1,4 @@
+using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 
 namespace meli_znube_integration.Services;
@@ -10,7 +11,7 @@ public static class FullRuleSourceItemsHelper
         if (rule?.Mappings == null || rule.Mappings.Count == 0) return [];
         var variations = rule.Mappings.Select(m => new MeliVariation
         {
-            Attributes = [new() { Id = "SELLER_SKU", ValueName = m.TargetSku }],
+            Attributes = [new() { Id = MeliConstants.SellerSkuAttributeId, ValueName = m.TargetSku }],
             AvailableQuantity = 0
         }).ToList();
         return

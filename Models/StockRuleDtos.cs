@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using meli_znube_integration.Common;
 
 namespace meli_znube_integration.Models;
 
@@ -17,7 +18,7 @@ public class StockRuleDto
     public string TargetSku { get; set; } = default!;
 
     [JsonPropertyName("ruleType")]
-    public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
+    public string RuleType { get; set; } = StockRuleTypes.Full;
 
     /// <summary>FULL rules: true if one or more variant SKUs were not found in Znube at save time.</summary>
     [JsonPropertyName("isIncomplete")]

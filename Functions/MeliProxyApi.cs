@@ -125,7 +125,7 @@ public class MeliProxyApi
             {
                 Id = v.Id,
                 UserProductId = v.UserProductId,
-                Sku = v.Attributes.FirstOrDefault(a => a.Id == "SELLER_SKU")?.ValueName,
+                Sku = v.Attributes.FirstOrDefault(a => a.Id == MeliConstants.SellerSkuAttributeId)?.ValueName,
                 Description = BuildDescription(v.Attributes)
             }).OrderBy(v => v.Sku)]
         };

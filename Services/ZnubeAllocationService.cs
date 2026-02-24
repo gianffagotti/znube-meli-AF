@@ -8,7 +8,6 @@ public class ZnubeAllocationService : IZnubeAllocationService
 {
     private readonly IZnubeApiClient _znubeApiClient;
     private readonly IOrderItemExpander _orderItemExpander;
-    private const string PackDynamicRuleType = "PACK_DYNAMIC";
 
     public ZnubeAllocationService(IZnubeApiClient znubeApiClient, IOrderItemExpander orderItemExpander)
     {
@@ -32,26 +31,11 @@ public class ZnubeAllocationService : IZnubeAllocationService
 
     private async Task<List<ZnubeAllocationEntry>> BuildAllocationsAsync(List<OrderItemResolved> resolved, CancellationToken cancellationToken)
     {
-        var variantAllocations = resolved
-            .Where(r => string.Equals(r.RuleType, PackDynamicRuleType, StringComparison.OrdinalIgnoreCase))
-            .Select(r => new ZnubeAllocationEntry
-            {
-                ProductLabel = r.ProductLabel ?? r.Sku,
-                AssignmentName = NoteUtils.VariantAssignment,
-                Quantity = r.Quantity
-            })
-            .ToList();
-
         var skuRequests = resolved
-            .Where(r => !string.Equals(r.RuleType, PackDynamicRuleType, StringComparison.OrdinalIgnoreCase))
             .Select(r => new SkuRequest { Sku = r.Sku, Quantity = r.Quantity, ProductLabel = r.ProductLabel })
             .ToList();
 
-        var allocations = await GetAllocationsForSkusAsync(skuRequests, cancellationToken);
-        if (variantAllocations.Count > 0)
-            allocations.AddRange(variantAllocations);
-
-        return allocations;
+        return await GetAllocationsForSkusAsync(skuRequests, cancellationToken);
     }
 
     public async Task<List<ZnubeAllocationEntry>> GetAllocationsForSkusAsync(IEnumerable<SkuRequest> requests, CancellationToken cancellationToken = default)

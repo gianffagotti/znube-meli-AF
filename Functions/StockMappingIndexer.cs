@@ -177,7 +177,7 @@ public class StockMappingIndexer
             // Intento 1: variation.seller_custom_field (Proxy de seller_sku)
             // Intento 2: Attributes (id === 'SELLER_SKU')
 
-            var skuAttr = variation.Attributes.FirstOrDefault(a => a.Id == "SELLER_SKU");
+            var skuAttr = variation.Attributes.FirstOrDefault(a => a.Id == MeliConstants.SellerSkuAttributeId);
             if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.ToUpper();
 
             if (!string.IsNullOrWhiteSpace(variation.SellerCustomField)) return variation.SellerCustomField.ToUpper();
@@ -187,7 +187,7 @@ public class StockMappingIndexer
             // Item simple
             if (!string.IsNullOrWhiteSpace(item.SellerCustomField)) return item.SellerCustomField.ToUpper();
 
-            var skuAttr = item.Attributes.FirstOrDefault(a => a.Id == "SELLER_SKU");
+            var skuAttr = item.Attributes.FirstOrDefault(a => a.Id == MeliConstants.SellerSkuAttributeId);
             if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.ToUpper();
         }
 

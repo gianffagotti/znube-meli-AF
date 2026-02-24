@@ -524,7 +524,7 @@ public class MeliClient
 
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Post, $"messages/action_guide/packs/{Uri.EscapeDataString(packIdOrOrderId)}/option");
-        var body = new { option_id = "OTHER", text = text };
+        var body = new { option_id = MeliConstants.MessageOptionIdOther, text = text };
         req.Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
 
         using var res = await client.SendAsync(req);

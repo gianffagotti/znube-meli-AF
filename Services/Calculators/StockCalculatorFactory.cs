@@ -1,3 +1,5 @@
+using meli_znube_integration.Common;
+
 namespace meli_znube_integration.Services.Calculators;
 
 public class StockCalculatorFactory
@@ -12,6 +14,6 @@ public class StockCalculatorFactory
     public IStockCalculator GetCalculator(string ruleType)
     {
         return _calculators.FirstOrDefault(c => c.RuleType.Equals(ruleType, StringComparison.OrdinalIgnoreCase))
-               ?? _calculators.First(c => c.RuleType == "FULL"); // Default
+               ?? _calculators.First(c => c.RuleType == StockRuleTypes.Full); // Default
     }
 }

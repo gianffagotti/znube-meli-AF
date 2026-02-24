@@ -1,3 +1,4 @@
+using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Models.Dtos;
 
@@ -11,7 +12,7 @@ public interface IMeliApiClient
     Task<bool> CreateOrderNoteAsync(string orderId, string note, CancellationToken cancellationToken = default);
     Task<List<string>> GetOrderNotesAsync(string orderId, CancellationToken cancellationToken = default);
     Task<MeliSearchResponseDto?> SearchOrdersAsync(long sellerId, string buyerNickname, DateTime from, DateTime to, CancellationToken cancellationToken = default);
-    Task<bool> SendMessageAsync(string packOrOrderId, string text, string optionId = "OTHER", CancellationToken cancellationToken = default);
+    Task<bool> SendMessageAsync(string packOrOrderId, string text, string optionId = MeliConstants.MessageOptionIdOther, CancellationToken cancellationToken = default);
     Task<MeliScanResponseDto?> ScanItemsAsync(long userId, string? scrollId, CancellationToken cancellationToken = default);
     Task<List<MeliItem>> GetItemsAsync(IEnumerable<string> ids, CancellationToken cancellationToken = default);
     Task<(int Quantity, string Version)?> GetUserProductStockAsync(string userProductId, CancellationToken cancellationToken = default);

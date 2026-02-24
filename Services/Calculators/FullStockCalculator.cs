@@ -1,10 +1,11 @@
+using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 
 namespace meli_znube_integration.Services.Calculators;
 
 public class FullStockCalculator : IStockCalculator
 {
-    public string RuleType => "FULL";
+    public string RuleType => StockRuleTypes.Full;
 
     public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, MeliItem targetItem, List<MeliItem> sourceItems)
     {

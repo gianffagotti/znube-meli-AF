@@ -8,11 +8,6 @@ namespace meli_znube_integration.Services;
 
 public class OrderItemExpander : IOrderItemExpander
 {
-    private const string PackRuleType = "PACK";
-    private const string ComboRuleType = "COMBO";
-    private const string FullRuleType = "FULL";
-    private const string PackDynamicRuleType = "PACK_DYNAMIC";
-
     private readonly IZnubeApiClient _znubeApiClient;
     private readonly IMeliApiClient _meliApiClient;
     private readonly IOrderItemRuleResolver _ruleResolver;
@@ -50,7 +45,7 @@ public class OrderItemExpander : IOrderItemExpander
             }
 
             if ((rule is null ||
-                string.Equals(rule.RuleType, FullRuleType, StringComparison.OrdinalIgnoreCase)) &&
+                string.Equals(rule.RuleType, StockRuleTypes.Full, StringComparison.OrdinalIgnoreCase)) &&
                 !string.IsNullOrWhiteSpace(sku))
             {
                 if (!znubeSkuCache.TryGetValue(sku, out var skuExists))
@@ -69,7 +64,7 @@ public class OrderItemExpander : IOrderItemExpander
                         Quantity = qty,
                         ProductLabel = item.Title,
                         OrderItemId = item.ItemId,
-                        RuleType = FullRuleType
+                        RuleType = StockRuleTypes.Full
                     });
                     continue;
                 }
@@ -92,7 +87,7 @@ public class OrderItemExpander : IOrderItemExpander
                         Quantity = qty,
                         ProductLabel = item.Title,
                         OrderItemId = item.ItemId,
-                        RuleType = FullRuleType
+                        RuleType = StockRuleTypes.Full
                     });
                     continue;
                 }
@@ -101,7 +96,7 @@ public class OrderItemExpander : IOrderItemExpander
                 return null;
             }
 
-            if (string.Equals(rule.RuleType, PackRuleType, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
             {
                 var mapping = ResolveMapping(rule, item);
                 if (mapping == null)
@@ -113,7 +108,7 @@ public class OrderItemExpander : IOrderItemExpander
                         Quantity = qty,
                         ProductLabel = item.Title,
                         OrderItemId = item.ItemId,
-                        RuleType = FullRuleType
+                        RuleType = StockRuleTypes.Full
                     });
                     continue;
                 }
@@ -143,13 +138,13 @@ public class OrderItemExpander : IOrderItemExpander
                     Quantity = qty * packQty,
                     ProductLabel = item.Title,
                     OrderItemId = item.ItemId,
-                    RuleType = PackRuleType,
+                    RuleType = StockRuleTypes.Pack,
                     SourceItemId = source.SourceItemId
                 });
                 continue;
             }
 
-            if (string.Equals(rule.RuleType, ComboRuleType, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(rule.RuleType, StockRuleTypes.Combo, StringComparison.OrdinalIgnoreCase))
             {
                 var mapping = ResolveMapping(rule, item);
                 List<RuleSourceMatchDto>? matches = null;
@@ -167,7 +162,7 @@ public class OrderItemExpander : IOrderItemExpander
                         Quantity = qty,
                         ProductLabel = item.Title,
                         OrderItemId = item.ItemId,
-                        RuleType = FullRuleType
+                        RuleType = StockRuleTypes.Full
                     });
                     continue;
                 }
@@ -183,7 +178,7 @@ public class OrderItemExpander : IOrderItemExpander
                         Quantity = qty * comboQty,
                         ProductLabel = item.Title,
                         OrderItemId = item.ItemId,
-                        RuleType = ComboRuleType,
+                        RuleType = StockRuleTypes.Combo,
                         SourceItemId = match.SourceItemId
                     });
                 }
@@ -330,7 +325,7 @@ public class OrderItemExpander : IOrderItemExpander
                 Quantity = kvp.Value,
                 ProductLabel = kvp.Key,
                 OrderItemId = item.ItemId,
-                RuleType = PackDynamicRuleType,
+                RuleType = StockRuleTypes.Pack,
                 SourceItemId = resolvedSourceItemId
             });
         }
@@ -434,7 +429,7 @@ public class OrderItemExpander : IOrderItemExpander
     private async Task<string?> ResolveItemIdAsync(string sourceItemId, string sellerId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(sourceItemId)) return null;
-        if (sourceItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
+        if (sourceItemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
             return sourceItemId;
 
         var search = await _meliApiClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = sourceItemId }, cancellationToken);

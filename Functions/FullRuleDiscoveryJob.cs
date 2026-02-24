@@ -178,9 +178,7 @@ public class FullRuleDiscoveryJob
         }
 
         var existingRule = await _stockRuleService.GetRuleAsync(sellerId, item.Id);
-        var isPackOrCombo = existingRule != null && existingRule.RuleType != null &&
-            (string.Equals(existingRule.RuleType, "PACK", StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(existingRule.RuleType, "COMBO", StringComparison.OrdinalIgnoreCase));
+        var isPackOrCombo = existingRule != null && StockRuleTypes.IsPackOrCombo(existingRule.RuleType);
         if (isPackOrCombo)
         {
             return new ProcessItemResult { Saved = false, IsIncomplete = false };
@@ -237,7 +235,7 @@ public class FullRuleDiscoveryJob
             TargetTitle = item.Title ?? "",
             TargetThumbnail = item.Thumbnail,
             TargetSku = targetSku,
-            RuleType = "FULL",
+            RuleType = StockRuleTypes.Full,
             IsIncomplete = isIncomplete,
             Components = new List<RuleComponentDto>(),
             Mappings = mappings.Select(m => new VariantMappingDto
@@ -255,13 +253,13 @@ public class FullRuleDiscoveryJob
     {
         if (variation != null)
         {
-            var skuAttr = variation.Attributes?.FirstOrDefault(a => string.Equals(a.Id, "SELLER_SKU", StringComparison.OrdinalIgnoreCase));
+            var skuAttr = variation.Attributes?.FirstOrDefault(a => string.Equals(a.Id, MeliConstants.SellerSkuAttributeId, StringComparison.OrdinalIgnoreCase));
             if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.Trim();
             if (!string.IsNullOrWhiteSpace(variation.SellerCustomField)) return variation.SellerCustomField.Trim();
         }
         else
         {
-            var skuAttr = item.Attributes?.FirstOrDefault(a => string.Equals(a.Id, "SELLER_SKU", StringComparison.OrdinalIgnoreCase));
+            var skuAttr = item.Attributes?.FirstOrDefault(a => string.Equals(a.Id, MeliConstants.SellerSkuAttributeId, StringComparison.OrdinalIgnoreCase));
             if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.Trim();
             if (!string.IsNullOrWhiteSpace(item.SellerSku)) return item.SellerSku.Trim();
             if (!string.IsNullOrWhiteSpace(item.SellerCustomField)) return item.SellerCustomField.Trim();

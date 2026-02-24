@@ -1,5 +1,6 @@
 using Azure;
 using Azure.Data.Tables;
+using meli_znube_integration.Common;
 
 namespace meli_znube_integration.Models;
 
@@ -18,6 +19,6 @@ public class StockSkuIndexEntity : ITableEntity
     public DateTimeOffset? Timestamp { get; set; }
     public ETag ETag { get; set; }
 
-    /// <summary>Always "FULL" for this index.</summary>
-    public string RuleType { get; set; } = "FULL";
+    /// <summary>Always FULL for this index.</summary>
+    public string RuleType { get; set; } = StockRuleTypes.Full;
 }

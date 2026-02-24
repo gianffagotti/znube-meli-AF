@@ -1,7 +1,8 @@
 using Azure;
 using Azure.Data.Tables;
-using System.Text.Json;
 using System.Runtime.Serialization;
+using System.Text.Json;
+using meli_znube_integration.Common;
 
 namespace meli_znube_integration.Models;
 
@@ -17,7 +18,7 @@ public class StockRuleEntity : ITableEntity
     public ETag ETag { get; set; }
 
     // Config Properties
-    public string RuleType { get; set; } = "FULL"; // "FULL", "PACK", "COMBO"
+    public string RuleType { get; set; } = StockRuleTypes.Full;
 
     /// <summary>FULL rules: true if one or more variant SKUs were not found in Znube at save time.</summary>
     public bool IsIncomplete { get; set; }

@@ -59,7 +59,7 @@ public class StockSyncWorkerV2
             try
             {
                 var targetItemId = rule.TargetItemId;
-                var isFullRule = string.Equals(rule.RuleType, "FULL", StringComparison.OrdinalIgnoreCase)
+                var isFullRule = StockRuleTypes.IsFull(rule.RuleType)
                     && (rule.Components == null || rule.Components.Count == 0);
 
                 List<MeliItem> sourceItems;
@@ -86,7 +86,7 @@ public class StockSyncWorkerV2
                     foreach (var comp in components)
                     {
                         string itemId = comp.SourceItemId;
-                        if (!itemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
+                        if (!itemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
                         {
                             var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = comp.SourceItemId });
                             var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
@@ -110,7 +110,7 @@ public class StockSyncWorkerV2
 
                 // Fetch target item
                 string finalTargetItemId = targetItemId;
-                if (!finalTargetItemId.StartsWith("MLA", StringComparison.OrdinalIgnoreCase))
+                if (!finalTargetItemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
                 {
                     var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = finalTargetItemId });
                     var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
