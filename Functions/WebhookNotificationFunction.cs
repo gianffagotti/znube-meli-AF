@@ -115,7 +115,7 @@ public class WebhookNotificationFunction
         var userId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
         if (string.IsNullOrWhiteSpace(resource) || string.IsNullOrWhiteSpace(userId))
         {
-             return req.CreateResponse(HttpStatusCode.OK);
+            return req.CreateResponse(HttpStatusCode.OK);
         }
 
         var userProductId = ExtractUserProductId(resource);
@@ -139,7 +139,7 @@ public class WebhookNotificationFunction
         var item = items.FirstOrDefault();
         if (item == null)
         {
-             return req.CreateResponse(HttpStatusCode.OK);
+            return req.CreateResponse(HttpStatusCode.OK);
         }
 
         if (string.Equals(item.Shipping?.LogisticType, "fulfillment", StringComparison.OrdinalIgnoreCase))
@@ -162,7 +162,7 @@ public class WebhookNotificationFunction
             // Simple item check (though user_product_id usually implies variations or specific stock locations, simple items also have it)
             // If user_product_id matches item's user_product_id (if available in model) or we assume simple item.
             // For safety, let's try to extract SKU from item directly if no variation matched or exists.
-             sku = ExtractSku(item, null);
+            sku = ExtractSku(item, null);
         }
 
         if (string.IsNullOrWhiteSpace(sku))
@@ -175,14 +175,14 @@ public class WebhookNotificationFunction
         var sourceStock = await _meliClient.GetUserProductStockAsync(userProductId);
         if (sourceStock == null)
         {
-             _logger.LogWarning("No se pudo obtener stock del source: {UserProductId}", userProductId);
-             return req.CreateResponse(HttpStatusCode.OK);
+            _logger.LogWarning("No se pudo obtener stock del source: {UserProductId}", userProductId);
+            return req.CreateResponse(HttpStatusCode.OK);
         }
         var sourceQuantity = sourceStock.Value.Quantity;
 
         // 4. Target Discovery
         string? targetUserProductId = await _stockMappingService.GetTargetUserProductIdAsync(sku!);
-        
+
         if (string.IsNullOrWhiteSpace(targetUserProductId))
         {
             // Slow Path
@@ -190,36 +190,36 @@ public class WebhookNotificationFunction
             var targetItemId = skuSearch?.Results?.FirstOrDefault()?.Id;
             if (!string.IsNullOrWhiteSpace(targetItemId))
             {
-                 var targetItems = await _meliClient.GetItemsAsync([targetItemId!]);
-                 var targetItem = targetItems.FirstOrDefault();
-                 if (targetItem != null && string.Equals(targetItem.Shipping?.LogisticType, "fulfillment", StringComparison.OrdinalIgnoreCase))
-                 {
-                     // Find the variation/UPID for this SKU in the target item
-                     if (targetItem.Variations != null && targetItem.Variations.Count > 0)
-                     {
-                         // Need to find variation with same SKU
-                         foreach(var v in targetItem.Variations)
-                         {
-                             var vSku = ExtractSku(targetItem, v);
-                             if (string.Equals(vSku, sku, StringComparison.OrdinalIgnoreCase))
-                             {
-                                 targetUserProductId = v.UserProductId;
-                                 break;
-                             }
-                         }
-                     }
-                     else
-                     {
-                         targetUserProductId = targetItem.UserProductId;
-                     }
-                 }
+                var targetItems = await _meliClient.GetItemsAsync([targetItemId!]);
+                var targetItem = targetItems.FirstOrDefault();
+                if (targetItem != null && string.Equals(targetItem.Shipping?.LogisticType, "fulfillment", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Find the variation/UPID for this SKU in the target item
+                    if (targetItem.Variations != null && targetItem.Variations.Count > 0)
+                    {
+                        // Need to find variation with same SKU
+                        foreach (var v in targetItem.Variations)
+                        {
+                            var vSku = ExtractSku(targetItem, v);
+                            if (string.Equals(vSku, sku, StringComparison.OrdinalIgnoreCase))
+                            {
+                                targetUserProductId = v.UserProductId;
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        targetUserProductId = targetItem.UserProductId;
+                    }
+                }
             }
         }
 
         if (string.IsNullOrWhiteSpace(targetUserProductId))
         {
-             _logger.LogInformation("No se encontró target FULL para SKU: {Sku}", sku);
-             return req.CreateResponse(HttpStatusCode.OK);
+            _logger.LogInformation("No se encontró target FULL para SKU: {Sku}", sku);
+            return req.CreateResponse(HttpStatusCode.OK);
         }
 
         // 4b. Resolve target item for Anti-FULL guard (skip FULL-only; allow hybrid). Spec 03.
@@ -241,8 +241,8 @@ public class WebhookNotificationFunction
         var targetStock = await _meliClient.GetUserProductStockAsync(targetUserProductId!);
         if (targetStock == null)
         {
-             _logger.LogWarning("No se pudo leer stock del target: {TargetUserProductId}", targetUserProductId);
-             return req.CreateResponse(HttpStatusCode.OK);
+            _logger.LogWarning("No se pudo leer stock del target: {TargetUserProductId}", targetUserProductId);
+            return req.CreateResponse(HttpStatusCode.OK);
         }
 
         if (targetStock.Value.Quantity != sourceQuantity)
@@ -279,7 +279,7 @@ public class WebhookNotificationFunction
 
             var skuAttr = item.Attributes.FirstOrDefault(a => a.Id == MeliConstants.SellerSkuAttributeId);
             if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.ToUpper();
-            
+
             if (!string.IsNullOrWhiteSpace(item.SellerCustomField)) return item.SellerCustomField.ToUpper();
         }
 

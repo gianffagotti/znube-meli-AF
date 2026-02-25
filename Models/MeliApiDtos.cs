@@ -150,9 +150,45 @@ public class MeliNoteResultDto
 }
 
 // --- Search/Scan DTOs ---
+/// <summary>
+/// Converter for results array: Mercado Libre items search returns string IDs ["MLA123"],
+/// while orders search may return full objects. Handles both formats.
+/// </summary>
+public class MeliSearchResultsConverter : JsonConverter<List<MeliSearchResultDto>>
+{
+    public override List<MeliSearchResultDto> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType != JsonTokenType.StartArray)
+            throw new JsonException("Expected array for results.");
+        var list = new List<MeliSearchResultDto>();
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndArray)
+                break;
+            if (reader.TokenType == JsonTokenType.String)
+            {
+                list.Add(new MeliSearchResultDto { Id = reader.GetString() });
+            }
+            else if (reader.TokenType == JsonTokenType.StartObject)
+            {
+                var item = JsonSerializer.Deserialize<MeliSearchResultDto>(ref reader, options);
+                if (item != null)
+                    list.Add(item);
+            }
+        }
+        return list;
+    }
+
+    public override void Write(Utf8JsonWriter writer, List<MeliSearchResultDto> value, JsonSerializerOptions options)
+    {
+        JsonSerializer.Serialize(writer, value, options);
+    }
+}
+
 public class MeliSearchResponseDto
 {
     public MeliPagingDto? Paging { get; set; }
+    [JsonConverter(typeof(MeliSearchResultsConverter))]
     public List<MeliSearchResultDto> Results { get; set; } = new();
 }
 
