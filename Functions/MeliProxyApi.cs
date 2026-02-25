@@ -126,7 +126,7 @@ public class MeliProxyApi
                 Id = v.Id,
                 UserProductId = v.UserProductId,
                 Sku = v.Attributes.FirstOrDefault(a => a.Id == MeliConstants.SellerSkuAttributeId)?.ValueName,
-                Description = BuildDescription(v.Attributes)
+                Description = BuildDescription([..v.Attributes, ..v.AttributesCombinations])
             }).OrderBy(v => v.Sku)]
         };
     }
@@ -135,8 +135,8 @@ public class MeliProxyApi
     {
         var relevantAttributes = attributes
             .Where(a => !string.IsNullOrEmpty(a.ValueName) && 
-                        (a.Id.Contains("_COLOR", StringComparison.OrdinalIgnoreCase) || 
-                         a.Id.Contains("_SIZE", StringComparison.OrdinalIgnoreCase)))
+                        (a.Id.Contains("COLOR", StringComparison.OrdinalIgnoreCase) || 
+                         a.Id.Contains("SIZE", StringComparison.OrdinalIgnoreCase)))
             .Select(a => a.ValueName);
             
         return string.Join(" - ", relevantAttributes);
