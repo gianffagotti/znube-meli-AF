@@ -119,6 +119,8 @@ public class MeliItemShortDto
     public string? Title { get; set; }
     [JsonPropertyName("seller_sku")]
     public string? SellerSku { get; set; }
+    [JsonPropertyName("user_product_id")]
+    public string? UserProductId { get; set; }
 }
 
 // --- Pack DTO ---

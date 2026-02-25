@@ -746,4 +746,5 @@ public class MeliOrderItem
     public string? ItemId { get; set; }
     public string? TargetSku { get; set; }
     public int Quantity { get; set; } = 1;
+    public string? UserProductId { get; set; }
 }

@@ -26,7 +26,8 @@ public static class MeliOrderDtoExtensions
                 SellerSku = sku,
                 ItemId = oi.Item?.Id,
                 TargetSku = sku,
-                Quantity = qty
+                Quantity = qty,
+                UserProductId = oi.Item?.UserProductId
             });
         }
 

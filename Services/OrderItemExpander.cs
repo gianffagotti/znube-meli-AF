@@ -344,7 +344,7 @@ public class OrderItemExpander : IOrderItemExpander
 
     private static string? ExtractSizeFromSku(string? sku)
     {
-        if (string.IsNullOrWhiteSpace(sku)) return null;
+        if (string.IsNullOrWhiteSpace(sku) || !ZnubeLogicExtensions.IsValidSKU(sku)) return null;
         var parts = sku.Split('#', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0) return null;
         return parts[^1].Trim();
@@ -369,9 +369,9 @@ public class OrderItemExpander : IOrderItemExpander
     private static VariantMappingDto? ResolveMapping(StockRuleDto rule, MeliOrderItem item)
     {
         if (rule.Mappings == null || rule.Mappings.Count == 0) return null;
-        var targetSku = item.TargetSku ?? item.SellerSku;
+        var targetSku = item.UserProductId ?? item.SellerSku;
         if (!string.IsNullOrWhiteSpace(targetSku))
-            return rule.Mappings.FirstOrDefault(m => string.Equals(m.TargetSku, targetSku, StringComparison.OrdinalIgnoreCase));
+            return rule.Mappings.FirstOrDefault(m => string.Equals(m.TargetVariantId, targetSku, StringComparison.OrdinalIgnoreCase));
 
         return rule.Mappings.Count == 1 ? rule.Mappings[0] : null;
     }
