@@ -89,7 +89,7 @@ public class WebhookNotificationFunction
             {
                 case "orders_v2":
                     return await ProcessOrderNotification(req, resource);
-                case "stock-location":
+                case "stock-locations":
                     return await ProcessStockNotification(req, resource);
                 default:
                     _logger.LogInformation("Tópico no manejado: {Topic}. Resource: {Resource}", topic, resource);

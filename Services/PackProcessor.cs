@@ -67,6 +67,12 @@ public class PackProcessor
         if (string.IsNullOrWhiteSpace(last.Id))
             return (null, null);
 
+        var notes = await _meli.GetOrderNotesAsync(last.Id!);
+        if (notes.Count != 0)
+        {
+            return (null, null);
+        }
+
         var input = await BuildNoteBodyInputAsync(orders, last, isPack);
         return await WriteNoteAsync(orderIdFromWebhook, orders, last, input, isPack, packId);
     }
