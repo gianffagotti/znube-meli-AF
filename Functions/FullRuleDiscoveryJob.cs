@@ -38,7 +38,7 @@ public class FullRuleDiscoveryJob
     }
 
     [Function("FullRuleDiscoveryJob")]
-    public async Task Run([TimerTrigger("0 0 4 * * *", RunOnStartup = true)] TimerInfo timer)
+    public async Task Run([TimerTrigger("0 0 4 * * *")] TimerInfo timer)
     {
         _logger.LogInformation("Full Rule Discovery job started at {Time}.", DateTime.UtcNow);
 
