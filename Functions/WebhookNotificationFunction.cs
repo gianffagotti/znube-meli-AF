@@ -399,7 +399,7 @@ public class WebhookNotificationFunction
                 {
                     try
                     {
-                        var sourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule);
+                        var sourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule, sku);
                         if (sourceItems.Count == 0) continue;
 
                         await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, StockRuleTypes.Full, fromWorker: false, ct);
