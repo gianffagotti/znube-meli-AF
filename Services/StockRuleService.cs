@@ -25,7 +25,7 @@ public class StockRuleService
     }
 
     /// <summary>Normalizes SKU for use as partition key in StockSkuIndex (e.g. upper case, trimmed).</summary>
-    public static string NormalizeSku(string? sku) => (sku ?? "").Trim().ToUpperInvariant();
+    public static string NormalizeSku(string? sku) => (sku ?? "").Trim().Replace(" ","/").ToUpperInvariant();
 
     /// <summary>Sanitizes a value for use as PartitionKey or RowKey in Azure Table Storage.
     /// Removes/replaces forbidden characters: / \ # ? and control chars (U+0000–U+001F). Caps length at 1024.</summary>

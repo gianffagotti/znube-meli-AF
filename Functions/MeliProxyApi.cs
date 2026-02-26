@@ -134,7 +134,7 @@ public class MeliProxyApi
     private static string BuildDescription(List<MeliAttribute> attributes)
     {
         var relevantAttributes = attributes
-            .Where(a => !string.IsNullOrEmpty(a.ValueName) && 
+            .Where(a => !string.IsNullOrEmpty(a.ValueName) && !string.IsNullOrEmpty(a.Id) &&
                         (a.Id.Contains("COLOR", StringComparison.OrdinalIgnoreCase) || 
                          a.Id.Contains("SIZE", StringComparison.OrdinalIgnoreCase)))
             .Select(a => a.ValueName);

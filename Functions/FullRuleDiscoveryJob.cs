@@ -38,7 +38,7 @@ public class FullRuleDiscoveryJob
     }
 
     [Function("FullRuleDiscoveryJob")]
-    public async Task Run([TimerTrigger("0 0 4 * * *")] TimerInfo timer)
+    public async Task Run([TimerTrigger("0 0 4 * * *", RunOnStartup = true)] TimerInfo timer)
     {
         _logger.LogInformation("Full Rule Discovery job started at {Time}.", DateTime.UtcNow);
 
@@ -56,6 +56,9 @@ public class FullRuleDiscoveryJob
             var incomplete = result.Incomplete;
             _logger.LogInformation("Full Rule Discovery finished. Processed: {Processed}, FULL rules created: {Created}, Incomplete: {Incomplete}.",
                 processed, created, incomplete);
+            var summaryMessage = "Full Rule Discovery finalizado. Publicaciones procesadas: " + processed + ". Reglas FULL creadas: " + created + ". Reglas incompletas: " + incomplete + ".";
+            var detailsJson = JsonSerializer.Serialize(new { processed, created, incomplete });
+            await _dashboardLogService.AppendLogAsync("Info", "FullRuleDiscovery", summaryMessage, detailsJson, null, CancellationToken.None);
         }
         catch (Exception ex)
         {

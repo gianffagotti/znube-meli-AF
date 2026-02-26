@@ -32,7 +32,7 @@ public class StockSyncWorkerV2
     }
 
     [Function("StockSyncWorkerV2")]
-    public async Task Run([TimerTrigger("0 0 5,16 * * *")] TimerInfo myTimer)
+    public async Task Run([TimerTrigger("0 0 5,16 * * *", RunOnStartup = true)] TimerInfo myTimer)
     {
         _logger.LogInformation("Starting Stock Sync V2 at: {Time}", DateTime.Now);
 
@@ -51,7 +51,7 @@ public class StockSyncWorkerV2
 
         _logger.LogInformation("Loaded {Count} rules.", rules.Count);
 
-        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 5 };
+        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 };
         var sellerId = long.Parse(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId));
 
         await Parallel.ForEachAsync(rules, parallelOptions, async (rule, ct) =>
