@@ -371,7 +371,7 @@ public class WebhookNotificationFunction
             sourceItemId = search?.Results?.FirstOrDefault()?.Id;
             if (!string.IsNullOrWhiteSpace(sourceItemId))
             {
-                var items = await _meliClient.GetItemsAsync(new[] { sourceItemId });
+                var items = await _meliClient.GetItemsAsync([sourceItemId]);
                 sourceItem = items?.FirstOrDefault();
                 if (sourceItem != null)
                 {
@@ -453,25 +453,30 @@ public class WebhookNotificationFunction
                 var rule = await _stockRuleService.GetRuleAsync(sellerId, targetItemId);
                 if (rule == null) continue;
 
+                rule.Mappings = [.. rule.Mappings
+                    .Where(m =>
+                            m.SourceMatches.Any(sm => sm.SourceVariantId == userProductId) ||
+                            (m.MatchSize != null && m.MatchSize.Equals(PackStockCalculator.ParseSizeFromSku(sku), StringComparison.OrdinalIgnoreCase)))];
+
                 var components = rule.Components;
                 if (components == null || components.Count == 0) continue; // FULL handled above
 
-                var sourceItems = new List<MeliItem>();
-                foreach (var comp in components)
+                var itemsId = components
+                    .Select(c => c.SourceItemId)
+                    .Where(id => !string.IsNullOrWhiteSpace(id));
+                var items = await _meliClient.GetItemsAsync(itemsId);
+
+                var mappingsSourceMatches = rule.Mappings.SelectMany(m => m.SourceMatches).Select(sm => sm.SourceVariantId);
+                var mappingsSizeMatches = rule.Mappings.Where(m => m.MatchSize is not null).Select(m => m.MatchSize!);
+                var sourceItems = items.Select(i =>
                 {
-                    string itemId = comp.SourceItemId;
-                    if (!itemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
-                    {
-                        var upSearch = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = comp.SourceItemId });
-                        var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
-                        if (!string.IsNullOrWhiteSpace(resolvedId)) itemId = resolvedId;
-                    }
-                    if (!string.IsNullOrWhiteSpace(itemId))
-                    {
-                        var items = await _meliClient.GetItemsAsync(new[] { itemId });
-                        if (items != null && items.Count > 0) sourceItems.AddRange(items);
-                    }
-                }
+                    i.Variations = i.Variations?
+                        .Where(v => mappingsSourceMatches.Any(msm => msm.Equals(v.UserProductId, StringComparison.OrdinalIgnoreCase)) ||
+                                    mappingsSizeMatches.Any(msm => msm.Equals(PackStockCalculator.ParseSizeFromSku(v.SellerSku), StringComparison.OrdinalIgnoreCase)))
+                        .ToList() ?? [];
+                    return i;
+                }).ToList();
+
                 if (sourceItems.Count == 0) continue;
 
                 await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, rule.RuleType, fromWorker: false, ct);

@@ -89,7 +89,7 @@ public class PackStockCalculator : IStockCalculator
     {
         if (rule.Mappings == null || rule.Mappings.Count == 0) return null;
         var mapping = rule.Mappings.FirstOrDefault(m => m.TargetVariantId == targetVar.UserProductId);
-        if (mapping == null && !string.IsNullOrWhiteSpace(targetVar.SellerSku))
+        if (mapping == null && ZnubeLogicExtensions.IsValidSKU(targetVar.SellerSku ?? ""))
             mapping = rule.Mappings.FirstOrDefault(m => string.Equals(m.TargetSku, targetVar.SellerSku, StringComparison.OrdinalIgnoreCase));
         return mapping;
     }

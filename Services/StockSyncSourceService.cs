@@ -25,7 +25,8 @@ public class StockSyncSourceService : IStockSyncSourceService
     public async Task EnrichSourceItemsWithZnubeStockAsync(List<MeliItem> sourceItems, string ruleType, bool fromWorker, CancellationToken cancellationToken = default)
     {
         if (sourceItems == null) return;
-        var useProductId = fromWorker || string.Equals(ruleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase);
+        var useProductId = fromWorker ||
+            (sourceItems.SelectMany(si => si.Variations).Count() > 5 && string.Equals(ruleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase));
 
         if (useProductId)
             await EnrichByProductIdAsync(sourceItems, cancellationToken);
