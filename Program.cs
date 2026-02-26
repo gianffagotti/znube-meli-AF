@@ -2,6 +2,7 @@ using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Infrastructure;
 using meli_znube_integration.Services;
+using meli_znube_integration.Services.Calculators;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Polly;
@@ -31,14 +32,19 @@ var host = Host.CreateDefaultBuilder(args)
             c.BaseAddress = new Uri(context.Configuration[EnvVars.Keys.ZnubeBaseUrl]!);
             c.Timeout = TimeSpan.FromSeconds(45);
         })
-        .AddHttpMessageHandler<ZnubeTokenHandler>();
+        .AddHttpMessageHandler<ZnubeTokenHandler>()
+        .AddPolicyHandler(ResiliencePolicies.GetZnubeResiliencePolicy());
 
         services.AddSingleton<TokensStoreBlob>();
         services.AddSingleton<MeliAuth>();
-        services.AddScoped<MeliClient>();
-        services.AddScoped<ZnubeClient>();
-        services.AddScoped<NoteService>();
-        services.AddSingleton<PackLockStoreBlob>();
+        services.AddScoped<IMeliApiClient, MeliApiClient>();
+        services.AddScoped<IZnubeApiClient, ZnubeApiClient>();
+        services.AddScoped<IZnubeAllocationService, ZnubeAllocationService>();
+        services.AddScoped<IOrderItemRuleResolver, OrderItemRuleResolver>();
+        services.AddScoped<IOrderItemExpander, OrderItemExpander>();
+        services.AddScoped<INoteContentBuilder, NoteContentBuilder>();
+        services.AddScoped<INotePersisterService, NotePersisterService>();
+        services.AddSingleton<IOrderExecutionStore, OrderExecutionStore>();
         services.AddScoped<PackProcessor>();
         services.AddTransient<ZnubeTokenHandler>();
         services.AddTransient<MeliTokenHandler>();
@@ -46,6 +52,15 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddTransient<MeliRateLimitHandler>();
         services.AddSingleton<StockMappingService>();
         services.AddSingleton<StockRuleService>();
+        services.AddSingleton<IDashboardLogService, DashboardLogService>();
+        services.AddScoped<IStockSyncSourceService, StockSyncSourceService>();
+        services.AddSingleton<ISkuParser, SkuParserService>();
+
+        // Calculators
+        services.AddSingleton<IStockCalculator, FullStockCalculator>();
+        services.AddSingleton<IStockCalculator, PackStockCalculator>();
+        services.AddSingleton<IStockCalculator, ComboStockCalculator>();
+        services.AddSingleton<StockCalculatorFactory>();
     })
     .Build();
 

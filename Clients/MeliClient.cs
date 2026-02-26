@@ -524,7 +524,7 @@ public class MeliClient
 
         var client = _httpClientFactory.CreateClient("meli");
         using var req = new HttpRequestMessage(HttpMethod.Post, $"messages/action_guide/packs/{Uri.EscapeDataString(packIdOrOrderId)}/option");
-        var body = new { option_id = "OTHER", text = text };
+        var body = new { option_id = MeliConstants.MessageOptionIdOther, text = text };
         req.Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json");
 
         using var res = await client.SendAsync(req);
@@ -743,5 +743,8 @@ public class MeliOrderItem
 {
     public string Title { get; set; } = string.Empty;
     public string? SellerSku { get; set; }
+    public string? ItemId { get; set; }
+    public string? TargetSku { get; set; }
     public int Quantity { get; set; } = 1;
+    public string? UserProductId { get; set; }
 }

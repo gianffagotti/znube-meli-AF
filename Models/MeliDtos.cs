@@ -65,13 +65,16 @@ public class MeliVariation
     public string? SellerCustomField { get; set; }
 
     [JsonPropertyName("seller_sku")]
-    public string? SellerSku { get; set; }
+    public string? SellerSku { get => Attributes.FirstOrDefault(a => a.Id.Equals("seller_sku", StringComparison.CurrentCultureIgnoreCase))?.ValueName; }
 
     [JsonPropertyName("user_product_id")]
     public string UserProductId { get; set; } = string.Empty;
-    
+
     [JsonPropertyName("attributes")]
     public List<MeliAttribute> Attributes { get; set; } = [];
+
+    [JsonPropertyName("attribute_combinations")]
+    public List<MeliAttribute> AttributesCombinations { get; set; } = [];
 
     [JsonPropertyName("available_quantity")]
     public int AvailableQuantity { get; set; }

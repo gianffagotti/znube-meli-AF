@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Net;
+using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
@@ -12,6 +14,8 @@ public class StockRulesApi
     private readonly StockRuleService _service;
     private readonly ILogger<StockRulesApi> _logger;
 
+    private static object ErrorBody(string message) => new { message, traceId = Activity.Current?.Id ?? Guid.NewGuid().ToString() };
+
     public StockRulesApi(StockRuleService service, ILogger<StockRulesApi> logger)
     {
         _service = service;
@@ -24,120 +28,121 @@ public class StockRulesApi
     {
         try
         {
-            var rules = await _service.GetAllRulesAsync();
-
-            var groups = rules
-                .GroupBy(r => r.MotherItemId)
-                .Select(g =>
-                {
-                    var first = g.First();
-                    return new StockRuleGroupDto
-                    {
-                        MotherItemId = g.Key,
-                        MotherTitle = first.MotherTitle,
-                        MotherThumbnail = first.MotherThumbnail,
-                        Rules = g.Select(r => new StockRuleItemDto
-                        {
-                            MotherUserProductId = r.PartitionKey,
-                            ChildUserProductId = r.RowKey,
-                            Type = r.Type,
-                            PackQuantity = r.PackQuantity,
-                            ChildItemId = r.ChildItemId,
-                            ChildTitle = r.ChildTitle
-                        }).ToList()
-                    };
-                })
-                .ToList();
+            var dtos = await _service.GetRulesBySellerAsync();
 
             var response = req.CreateResponse(HttpStatusCode.OK);
-            await response.WriteAsJsonAsync(groups);
+            await response.WriteAsJsonAsync(dtos);
             return response;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting stock rules");
             var response = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await response.WriteStringAsync("Internal Server Error");
+            await response.WriteAsJsonAsync(ErrorBody("Error getting stock rules"));
             return response;
         }
     }
 
-    [Function("UpsertStockRules")]
-    public async Task<HttpResponseData> UpsertRules(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "rules")] HttpRequestData req)
+    [Function("GetStockRule")]
+    public async Task<HttpResponseData> GetRule(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "rules/{targetItemId}")] HttpRequestData req,
+        string targetItemId)
     {
         try
         {
-            var groupDto = await req.ReadFromJsonAsync<StockRuleGroupDto>();
-            if (groupDto == null || groupDto.Rules == null)
+            if (string.IsNullOrWhiteSpace(targetItemId))
             {
                 return req.CreateResponse(HttpStatusCode.BadRequest);
             }
 
-            foreach (var ruleDto in groupDto.Rules)
-            {
-                var entity = new StockRuleEntity
-                {
-                    PartitionKey = ruleDto.MotherUserProductId,
-                    RowKey = ruleDto.ChildUserProductId,
-                    Type = ruleDto.Type,
-                    PackQuantity = ruleDto.PackQuantity,
-                    MotherItemId = groupDto.MotherItemId,
-                    MotherTitle = groupDto.MotherTitle,
-                    MotherThumbnail = groupDto.MotherThumbnail,
-                    ChildItemId = ruleDto.ChildItemId,
-                    ChildTitle = ruleDto.ChildTitle
-                };
+            var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+            var rule = await _service.GetRuleAsync(sellerId, targetItemId);
 
-                await _service.UpsertRuleAsync(entity);
+            if (rule == null)
+            {
+                return req.CreateResponse(HttpStatusCode.NotFound);
             }
 
-            return req.CreateResponse(HttpStatusCode.OK);
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            await response.WriteAsJsonAsync(rule);
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error upserting stock rules");
+            _logger.LogError(ex, "Error getting stock rule for {TargetItemId}", targetItemId);
             var response = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await response.WriteStringAsync("Internal Server Error");
+            await response.WriteAsJsonAsync(ErrorBody("Error getting stock rule"));
+            return response;
+        }
+    }
+
+    private static readonly IReadOnlySet<string> ValidRuleTypes = StockRuleTypes.ValidRuleTypes;
+
+    [Function("UpsertStockRule")]
+    public async Task<HttpResponseData> UpsertRule(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "rules")] HttpRequestData req)
+    {
+        try
+        {
+            var ruleDto = await req.ReadFromJsonAsync<StockRuleDto>();
+            if (ruleDto == null || string.IsNullOrWhiteSpace(ruleDto.TargetItemId))
+            {
+                return req.CreateResponse(HttpStatusCode.BadRequest);
+            }
+
+            var ruleType = (ruleDto.RuleType ?? string.Empty).Trim();
+            if (!StockRuleTypes.IsValid(ruleType))
+            {
+                _logger.LogWarning("UpsertStockRule: ruleType inválido '{RuleType}'. Valores permitidos: FULL, PACK, COMBO.", ruleDto.RuleType);
+                var badResponse = req.CreateResponse(HttpStatusCode.BadRequest);
+                await badResponse.WriteAsJsonAsync(new { message = "ruleType must be one of: FULL, PACK, COMBO." });
+                return badResponse;
+            }
+
+            if (StockRuleTypes.IsPackOrCombo(ruleType))
+            {
+                if (ruleDto.Components == null || ruleDto.Components.Count == 0)
+                {
+                    _logger.LogWarning("UpsertStockRule: PACK y COMBO requieren al menos un componente.");
+                    var badResponse = req.CreateResponse(HttpStatusCode.BadRequest);
+                    await badResponse.WriteAsJsonAsync(new { message = "PACK and COMBO rules require at least one component in 'components'." });
+                    return badResponse;
+                }
+            }
+
+            await _service.SaveRuleAsync(ruleDto);
+
+            var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+            var persisted = await _service.GetRuleAsync(sellerId, ruleDto.TargetItemId);
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            await response.WriteAsJsonAsync(persisted ?? ruleDto);
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error upserting stock rule");
+            var response = req.CreateResponse(HttpStatusCode.InternalServerError);
+            await response.WriteAsJsonAsync(ErrorBody("Error upserting stock rule"));
             return response;
         }
     }
 
     [Function("DeleteStockRule")]
     public async Task<HttpResponseData> DeleteRule(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "rules/{motherUpid}/{childUpid}")] HttpRequestData req,
-        string motherUpid,
-        string childUpid)
+        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "rules/{targetItemId}")] HttpRequestData req,
+        string targetItemId)
     {
         try
         {
-            await _service.DeleteRuleAsync(motherUpid, childUpid);
+            var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+            await _service.DeleteRuleAsync(sellerId, targetItemId);
             return req.CreateResponse(HttpStatusCode.OK);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error deleting stock rule");
             var response = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await response.WriteStringAsync("Internal Server Error");
-            return response;
-        }
-    }
-
-    [Function("DeleteStockRulesByGroup")]
-    public async Task<HttpResponseData> DeleteRulesByGroup(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "delete", Route = "rules-group/{motherItemId}")] HttpRequestData req,
-        string motherItemId)
-    {
-        try
-        {
-            await _service.DeleteRulesByMotherItemIdAsync(motherItemId);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error deleting stock rules by group");
-            var response = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await response.WriteStringAsync("Internal Server Error");
+            await response.WriteAsJsonAsync(ErrorBody("Error deleting stock rule"));
             return response;
         }
     }

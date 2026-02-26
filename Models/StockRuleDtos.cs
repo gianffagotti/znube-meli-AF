@@ -1,31 +1,84 @@
 using System.Text.Json.Serialization;
+using meli_znube_integration.Common;
 
 namespace meli_znube_integration.Models;
 
-public class StockRuleGroupDto
+public class StockRuleDto
 {
-    [JsonPropertyName("motherItemId")]
-    public string MotherItemId { get; set; } = default!;
-    [JsonPropertyName("motherTitle")]
-    public string? MotherTitle { get; set; }
-    [JsonPropertyName("motherThumbnail")]
-    public string? MotherThumbnail { get; set; }
-    [JsonPropertyName("rules")]
-    public List<StockRuleItemDto> Rules { get; set; } = new();
+    [JsonPropertyName("targetItemId")]
+    public string TargetItemId { get; set; } = default!;
+
+    [JsonPropertyName("targetTitle")]
+    public string TargetTitle { get; set; } = default!;
+
+    [JsonPropertyName("targetThumbnail")]
+    public string? TargetThumbnail { get; set; }
+    
+    [JsonPropertyName("targetSku")]
+    public string TargetSku { get; set; } = default!;
+
+    [JsonPropertyName("ruleType")]
+    public string RuleType { get; set; } = StockRuleTypes.Full;
+
+    /// <summary>FULL rules: true if one or more variant SKUs were not found in Znube at save time.</summary>
+    [JsonPropertyName("isIncomplete")]
+    public bool IsIncomplete { get; set; }
+
+    /// <summary>PACK rules: default pack size for fallbacks. Spec V2.</summary>
+    [JsonPropertyName("defaultPackQuantity")]
+    public int DefaultPackQuantity { get; set; } = 1;
+
+    [JsonPropertyName("components")]
+    public List<RuleComponentDto> Components { get; set; } = [];
+
+    [JsonPropertyName("mappings")]
+    public List<VariantMappingDto> Mappings { get; set; } = [];
 }
 
-public class StockRuleItemDto
+public class RuleComponentDto
 {
-    [JsonPropertyName("motherUserProductId")]
-    public string MotherUserProductId { get; set; } = default!;
-    [JsonPropertyName("childUserProductId")]
-    public string ChildUserProductId { get; set; } = default!;
-    [JsonPropertyName("type")]
-    public string Type { get; set; } = "FULL";
+    [JsonPropertyName("sourceItemId")]
+    public string SourceItemId { get; set; } = default!;
+
+    [JsonPropertyName("quantity")]
+    public int Quantity { get; set; } = 1;
+}
+
+public class VariantMappingDto
+{
+    [JsonPropertyName("targetVariantId")]
+    public string TargetVariantId { get; set; } = default!;
+    
+    [JsonPropertyName("targetSku")]
+    public string TargetSku { get; set; } = default!;
+
+    /// <summary>Optional per-variant pack size override. Null = use rule DefaultPackQuantity.</summary>
     [JsonPropertyName("packQuantity")]
-    public int PackQuantity { get; set; } = 1;
-    [JsonPropertyName("childItemId")]
-    public string ChildItemId { get; set; } = default!;
-    [JsonPropertyName("childTitle")]
-    public string ChildTitle { get; set; } = default!;
+    public int? PackQuantity { get; set; }
+
+    /// <summary>Strategy: "Explicit" (use SourceMatches) or "DynamicSize" (pool by MatchSize).</summary>
+    [JsonPropertyName("strategy")]
+    public string Strategy { get; set; } = "Explicit";
+
+    /// <summary>Used when Strategy == "DynamicSize". e.g. "M", "L", "42".</summary>
+    [JsonPropertyName("matchSize")]
+    public string? MatchSize { get; set; }
+
+    [JsonPropertyName("sourceMatches")]
+    public List<RuleSourceMatchDto> SourceMatches { get; set; } = new();
+}
+
+public class RuleSourceMatchDto
+{
+    [JsonPropertyName("sourceItemId")]
+    public string SourceItemId { get; set; } = default!;
+    
+    [JsonPropertyName("sourceVariantId")]
+    public string SourceVariantId { get; set; } = default!;
+    
+    [JsonPropertyName("sourceSku")]
+    public string SourceSku { get; set; } = default!;
+    
+    [JsonPropertyName("quantity")]
+    public int Quantity { get; set; }
 }

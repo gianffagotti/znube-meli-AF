@@ -1,6 +1,9 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
+using meli_znube_integration.Models;
+using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
+using meli_znube_integration.Services.Calculators;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 
@@ -9,20 +12,29 @@ namespace meli_znube_integration.Functions;
 public class StockSyncWorkerV2
 {
     private readonly StockRuleService _stockRuleService;
-    private readonly MeliClient _meliClient;
+    private readonly IMeliApiClient _meliClient;
+    private readonly IStockSyncSourceService _stockSyncSourceService;
+    private readonly StockCalculatorFactory _calculatorFactory;
     private readonly ILogger<StockSyncWorkerV2> _logger;
 
-    public StockSyncWorkerV2(StockRuleService stockRuleService, MeliClient meliClient, ILogger<StockSyncWorkerV2> logger)
+    public StockSyncWorkerV2(
+        StockRuleService stockRuleService,
+        IMeliApiClient meliClient,
+        IStockSyncSourceService stockSyncSourceService,
+        StockCalculatorFactory calculatorFactory,
+        ILogger<StockSyncWorkerV2> logger)
     {
         _stockRuleService = stockRuleService;
         _meliClient = meliClient;
+        _stockSyncSourceService = stockSyncSourceService;
+        _calculatorFactory = calculatorFactory;
         _logger = logger;
     }
 
     [Function("StockSyncWorkerV2")]
     public async Task Run([TimerTrigger("0 0 5,16 * * *")] TimerInfo myTimer)
     {
-        _logger.LogInformation($"Starting Stock Sync V2 at: {DateTime.Now}");
+        _logger.LogInformation("Starting Stock Sync V2 at: {Time}", DateTime.Now);
 
         if (!EnvVars.GetBool(EnvVars.Keys.EnableJobSyncV2, true))
         {
@@ -30,84 +42,111 @@ public class StockSyncWorkerV2
             return;
         }
 
-        // Step 1: Load Rules
-        var rules = await _stockRuleService.GetAllRulesAsync();
+        var rules = await _stockRuleService.GetRulesBySellerAsync();
         if (rules == null || rules.Count == 0)
         {
             _logger.LogInformation("No stock rules found. Exiting.");
             return;
         }
 
-        _logger.LogInformation($"Loaded {rules.Count} rules.");
+        _logger.LogInformation("Loaded {Count} rules.", rules.Count);
 
-        // Step 2: Group by Mother
-        var rulesByMother = rules.GroupBy(r => r.PartitionKey);
+        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 };
+        var sellerId = long.Parse(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId));
 
-        // Step 3: Process Groups (Parallel Loop)
-        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 5 };
-        
-        await Parallel.ForEachAsync(rulesByMother, parallelOptions, async (group, ct) =>
+        await Parallel.ForEachAsync(rules, parallelOptions, async (rule, ct) =>
         {
-            var motherUpid = group.Key;
             try
             {
-                // Step 4: Sync Logic (Per Mother)
-                // Fetch Mother Stock
-                var motherStock = await _meliClient.GetUserProductStockAsync(motherUpid);
-                if (motherStock == null)
+                var targetItemId = rule.TargetItemId;
+                var isFullRule = StockRuleTypes.IsFull(rule.RuleType)
+                    && (rule.Components == null || rule.Components.Count == 0);
+
+                List<MeliItem> sourceItems;
+                if (isFullRule)
                 {
-                    _logger.LogWarning($"Could not fetch stock for Mother {motherUpid}. Skipping group.");
+                    // FULL: build synthetic source items from Mappings (SKU-only); Znube enriches by SKU.
+                    sourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule);
+                    if (sourceItems.Count == 0)
+                    {
+                        _logger.LogWarning("FULL rule for Target {TargetItemId} has no mappings. Skipping.", targetItemId);
+                        return;
+                    }
+                }
+                else
+                {
+                    // PACK/COMBO: fetch source items from MELI by component IDs.
+                    var components = rule.Components;
+                    if (components == null || components.Count == 0)
+                    {
+                        _logger.LogWarning("Rule for Target {TargetItemId} has no components. Skipping.", targetItemId);
+                        return;
+                    }
+                    sourceItems = new List<MeliItem>();
+                    foreach (var comp in components)
+                    {
+                        string itemId = comp.SourceItemId;
+                        if (!itemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = comp.SourceItemId });
+                            var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
+                            if (!string.IsNullOrWhiteSpace(resolvedId)) itemId = resolvedId;
+                        }
+                        if (!string.IsNullOrWhiteSpace(itemId))
+                        {
+                            var items = await _meliClient.GetItemsAsync(new[] { itemId });
+                            if (items != null && items.Count > 0) sourceItems.AddRange(items);
+                        }
+                    }
+                    if (sourceItems.Count == 0)
+                    {
+                        _logger.LogWarning("Could not fetch source items for Target {TargetItemId}. Skipping.", targetItemId);
+                        return;
+                    }
+                }
+
+                // Overwrite quantities with Znube (FULL→SKU, PACK/COMBO→ProductId in worker). Spec 03.
+                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, rule.RuleType, fromWorker: true, ct);
+
+                // Fetch target item
+                string finalTargetItemId = targetItemId;
+                if (!finalTargetItemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
+                {
+                    var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = finalTargetItemId });
+                    var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
+                    if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
+                }
+                var targetItems = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });
+                var targetItem = targetItems?.FirstOrDefault();
+                if (targetItem == null)
+                {
+                    _logger.LogWarning("Could not fetch Target Item {TargetItemId}. Skipping.", targetItemId);
+                    return;
+                }
+                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem, ct))
+                {
+                    _logger.LogInformation("Skipping FULL-only item {TargetItemId} (no selling_address).", targetItemId);
                     return;
                 }
 
-                int motherQuantity = motherStock.Value.Quantity;
-
-                // Iterate Children Rules
-                foreach (var rule in group)
+                var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
+                var updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
+                foreach (var update in updates)
                 {
-                    try
+                    var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
+                    if (currentStock != null && currentStock.Value.Quantity != update.NewQuantity)
                     {
-                        // Calculate Target Quantity
-                        // Ensure strict type casting for the math (integers)
-                        // rule.PackQuantity defaults to 1 if 0 to avoid divide by zero, though model has default 1
-                        int packQty = rule.PackQuantity > 0 ? rule.PackQuantity : 1;
-                        int targetQty = (int)Math.Floor((double)motherQuantity / packQty);
-
-                        // Fetch Child Stock
-                        var childUpid = rule.RowKey;
-                        var childStock = await _meliClient.GetUserProductStockAsync(childUpid);
-
-                        if (childStock == null)
-                        {
-                            _logger.LogWarning($"Could not fetch stock for Child {childUpid} (Mother: {motherUpid}). Skipping child.");
-                            continue;
-                        }
-
-                        // Compare & Update
-                        if (childStock.Value.Quantity != targetQty)
-                        {
-                            _logger.LogInformation($"Updating Child {rule.ChildSku} ({childUpid}): {childStock.Value.Quantity} -> {targetQty} (Mother: {rule.MotherSku} Qty: {motherQuantity})");
-                            
-                            var success = await _meliClient.UpdateUserProductStockAsync(childUpid, targetQty, childStock.Value.Version);
-                            
-                            if (!success)
-                            {
-                                _logger.LogWarning($"Failed to update Child {rule.ChildSku} ({childUpid}).");
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"Error processing child rule {rule.RowKey} for mother {motherUpid}");
+                        _logger.LogInformation("Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
+                        await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version, ct);
                     }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Error processing mother group {motherUpid}");
+                _logger.LogError(ex, "Error processing rule for target {TargetItemId}", rule.TargetItemId);
             }
         });
 
-        _logger.LogInformation($"Stock Sync V2 finished at: {DateTime.Now}");
+        _logger.LogInformation("Stock Sync V2 finished at: {Time}", DateTime.Now);
     }
 }
