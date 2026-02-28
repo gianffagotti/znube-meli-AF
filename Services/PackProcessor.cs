@@ -67,8 +67,9 @@ public class PackProcessor
         if (string.IsNullOrWhiteSpace(last.Id))
             return (null, null);
 
+        var dryRun = EnvVars.GetBool(EnvVars.Keys.DryRun, false);
         var notes = await _meli.GetOrderNotesAsync(last.Id!);
-        if (notes.Count != 0)
+        if (!dryRun && notes.Count != 0)
         {
             return (null, null);
         }
