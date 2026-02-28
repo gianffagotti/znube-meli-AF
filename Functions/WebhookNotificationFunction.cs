@@ -1,10 +1,8 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Infrastructure;
-using meli_znube_integration.Models;
 using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
-using meli_znube_integration.Services.Calculators;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Configuration;
@@ -19,10 +17,7 @@ public class WebhookNotificationFunction
 {
     private readonly PackProcessor _processor;
     private readonly IMeliApiClient _meliClient;
-    private readonly StockMappingService _stockMappingService;
-    private readonly StockRuleService _stockRuleService;
-    private readonly StockCalculatorFactory _calculatorFactory;
-    private readonly IStockSyncSourceService _stockSyncSourceService;
+    private readonly StockLocationQueueService _stockQueueService;
     private readonly IOrderExecutionStore _orderExecutionStore;
     private readonly ILogger<WebhookNotificationFunction> _logger;
     private readonly IConfiguration _configuration;
@@ -30,20 +25,14 @@ public class WebhookNotificationFunction
     public WebhookNotificationFunction(
         PackProcessor processor,
         IMeliApiClient meliClient,
-        StockMappingService stockMappingService,
-        StockRuleService stockRuleService,
-        StockCalculatorFactory calculatorFactory,
-        IStockSyncSourceService stockSyncSourceService,
+        StockLocationQueueService stockQueueService,
         IOrderExecutionStore orderExecutionStore,
         ILogger<WebhookNotificationFunction> logger,
         IConfiguration configuration)
     {
         _processor = processor;
         _meliClient = meliClient;
-        _stockMappingService = stockMappingService;
-        _stockRuleService = stockRuleService;
-        _calculatorFactory = calculatorFactory;
-        _stockSyncSourceService = stockSyncSourceService;
+        _stockQueueService = stockQueueService;
         _orderExecutionStore = orderExecutionStore;
         _logger = logger;
         _configuration = configuration;
@@ -90,7 +79,7 @@ public class WebhookNotificationFunction
                 case "orders_v2":
                     return await ProcessOrderNotification(req, resource);
                 case "stock-locations":
-                    return await ProcessStockNotification(req, resource);
+                    return await EnqueueStockNotificationAsync(req, resource, topic);
                 default:
                     _logger.LogInformation("Tópico no manejado: {Topic}. Resource: {Resource}", topic, resource);
                     return req.CreateResponse(HttpStatusCode.OK);
@@ -103,199 +92,24 @@ public class WebhookNotificationFunction
         }
     }
 
-    private async Task<HttpResponseData> ProcessStockNotification(HttpRequestData req, string? resource)
+    private async Task<HttpResponseData> EnqueueStockNotificationAsync(HttpRequestData req, string? resource, string? topic)
     {
-        bool useV2 = EnvVars.GetBool(EnvVars.Keys.UseV2StockLogic, false);
-        if (useV2)
+        if (string.IsNullOrWhiteSpace(resource))
         {
-            return await ProcessStockNotificationV2(req, resource);
-        }
-
-        // Resource format: /user-products/{user_product_id}/stock
-        var userId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
-        if (string.IsNullOrWhiteSpace(resource) || string.IsNullOrWhiteSpace(userId))
-        {
+            _logger.LogWarning("Webhook stock-locations recibido sin resource.");
             return req.CreateResponse(HttpStatusCode.OK);
         }
 
-        var userProductId = ExtractUserProductId(resource);
-        if (string.IsNullOrWhiteSpace(userProductId))
+        var message = new StockLocationQueueMessage
         {
-            _logger.LogWarning("No se pudo extraer user_product_id de: {Resource}", resource);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
+            Topic = topic,
+            Resource = resource,
+            ReceivedAtUtc = DateTimeOffset.UtcNow
+        };
 
-        // 1. Parent Discovery
-        var search = await _meliClient.SearchItemsAsync(long.Parse(userId), new MeliItemSearchQuery { UserProductId = userProductId });
-        var itemId = search?.Results?.FirstOrDefault()?.Id;
-        if (string.IsNullOrWhiteSpace(itemId))
-        {
-            _logger.LogInformation("No se encontró Item ID para user_product_id: {UserProductId}. Ignorando.", userProductId);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        // 2. Source Validation & SKU Extraction
-        var items = await _meliClient.GetItemsAsync([itemId!]);
-        var item = items.FirstOrDefault();
-        if (item == null)
-        {
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        if (string.Equals(item.Shipping?.LogisticType, "fulfillment", StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogInformation("Ignorando notificación de stock para item FULL: {ItemId}", itemId);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        string? sku = null;
-        if (item.Variations != null && item.Variations.Count > 0)
-        {
-            var variation = item.Variations.FirstOrDefault(v => v.UserProductId == userProductId);
-            if (variation != null)
-            {
-                sku = ExtractSku(item, variation);
-            }
-        }
-        else
-        {
-            // Simple item check (though user_product_id usually implies variations or specific stock locations, simple items also have it)
-            // If user_product_id matches item's user_product_id (if available in model) or we assume simple item.
-            // For safety, let's try to extract SKU from item directly if no variation matched or exists.
-            sku = ExtractSku(item, null);
-        }
-
-        if (string.IsNullOrWhiteSpace(sku))
-        {
-            _logger.LogWarning("No se pudo extraer SKU para Item: {ItemId}, UserProduct: {UserProductId}", itemId, userProductId);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        // 3. Reliable Source Stock Fetch
-        var sourceStock = await _meliClient.GetUserProductStockAsync(userProductId);
-        if (sourceStock == null)
-        {
-            _logger.LogWarning("No se pudo obtener stock del source: {UserProductId}", userProductId);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-        var sourceQuantity = sourceStock.Value.Quantity;
-
-        // 4. Target Discovery
-        string? targetUserProductId = await _stockMappingService.GetTargetUserProductIdAsync(sku!);
-
-        if (string.IsNullOrWhiteSpace(targetUserProductId))
-        {
-            // Slow Path
-            var skuSearch = await _meliClient.SearchItemsAsync(long.Parse(userId), new MeliItemSearchQuery { SellerSku = sku! });
-            var targetItemId = skuSearch?.Results?.FirstOrDefault()?.Id;
-            if (!string.IsNullOrWhiteSpace(targetItemId))
-            {
-                var targetItems = await _meliClient.GetItemsAsync([targetItemId!]);
-                var targetItem = targetItems.FirstOrDefault();
-                if (targetItem != null && string.Equals(targetItem.Shipping?.LogisticType, "fulfillment", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Find the variation/UPID for this SKU in the target item
-                    if (targetItem.Variations != null && targetItem.Variations.Count > 0)
-                    {
-                        // Need to find variation with same SKU
-                        foreach (var v in targetItem.Variations)
-                        {
-                            var vSku = ExtractSku(targetItem, v);
-                            if (string.Equals(vSku, sku, StringComparison.OrdinalIgnoreCase))
-                            {
-                                targetUserProductId = v.UserProductId;
-                                break;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        targetUserProductId = targetItem.UserProductId;
-                    }
-                }
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(targetUserProductId))
-        {
-            _logger.LogInformation("No se encontró target FULL para SKU: {Sku}", sku);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        // 4b. Resolve target item for Anti-FULL guard (skip FULL-only; allow hybrid). Spec 03.
-        MeliItem? targetItemForGuard = null;
-        var targetSearch = await _meliClient.SearchItemsAsync(long.Parse(userId), new MeliItemSearchQuery { UserProductId = targetUserProductId });
-        var targetItemIdForGuard = targetSearch?.Results?.FirstOrDefault()?.Id;
-        if (!string.IsNullOrWhiteSpace(targetItemIdForGuard))
-        {
-            var targetItemsForGuard = await _meliClient.GetItemsAsync([targetItemIdForGuard!]);
-            targetItemForGuard = targetItemsForGuard?.FirstOrDefault();
-        }
-        if (targetItemForGuard != null && await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItemForGuard))
-        {
-            _logger.LogDebug("V1: Skipping FULL-only target for SKU {Sku} (no selling_address).", sku);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        // 5. Synchronization
-        var targetStock = await _meliClient.GetUserProductStockAsync(targetUserProductId!);
-        if (targetStock == null)
-        {
-            _logger.LogWarning("No se pudo leer stock del target: {TargetUserProductId}", targetUserProductId);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        if (targetStock.Value.Quantity != sourceQuantity)
-        {
-            _logger.LogInformation("Sincronizando SKU {Sku}: {TargetQuantity} -> {SourceQuantity}", sku, targetStock.Value.Quantity, sourceQuantity);
-            var success = await _meliClient.UpdateUserProductStockAsync(targetUserProductId!, sourceQuantity, targetStock.Value.Version);
-            if (!success)
-            {
-                _logger.LogWarning("Conflicto de concurrencia al actualizar SKU {Sku}. Se reintentará en el próximo evento.", sku);
-            }
-        }
-        else
-        {
-            _logger.LogInformation("Stock sincronizado para SKU {Sku}. Cantidad: {Quantity}", sku, sourceQuantity);
-        }
-
+        await _stockQueueService.EnqueueAsync(message, CancellationToken.None);
+        _logger.LogInformation("Webhook stock-locations encolado. Resource: {Resource}", resource);
         return req.CreateResponse(HttpStatusCode.OK);
-    }
-
-    private static string? ExtractSku(MeliItem item, MeliVariation? variation)
-    {
-        if (variation != null)
-        {
-            if (!string.IsNullOrWhiteSpace(variation.SellerSku)) return variation.SellerSku.ToUpper();
-
-            var skuAttr = variation.Attributes.FirstOrDefault(a => a.Id == MeliConstants.SellerSkuAttributeId);
-            if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.ToUpper();
-
-            if (!string.IsNullOrWhiteSpace(variation.SellerCustomField)) return variation.SellerCustomField.ToUpper();
-        }
-        else
-        {
-            if (!string.IsNullOrWhiteSpace(item.SellerSku)) return item.SellerSku.ToUpper(); // Assuming SellerSku exists on Item model, if not check attributes/custom field
-
-            var skuAttr = item.Attributes.FirstOrDefault(a => a.Id == MeliConstants.SellerSkuAttributeId);
-            if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.ToUpper();
-
-            if (!string.IsNullOrWhiteSpace(item.SellerCustomField)) return item.SellerCustomField.ToUpper();
-        }
-
-        return null;
-    }
-
-    private static string ExtractUserProductId(string path)
-    {
-        // /user-products/{user_product_id}/stock
-        var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        // parts: user-products, {id}, stock
-        if (parts.Length >= 2 && string.Equals(parts[0], "user-products", StringComparison.OrdinalIgnoreCase))
-        {
-            return parts[1];
-        }
-        return string.Empty;
     }
 
     private async Task<HttpResponseData> ProcessOrderNotification(HttpRequestData req, string? resource)
@@ -341,180 +155,6 @@ public class WebhookNotificationFunction
         {
             await _orderExecutionStore.MarkDoneAsync(executionKey);
         }
-    }
-
-    private async Task<HttpResponseData> ProcessStockNotificationV2(HttpRequestData req, string? resource)
-    {
-        _logger.LogInformation("Executing V2 logic for stock notification. Resource: {Resource}", resource);
-
-        if (string.IsNullOrWhiteSpace(resource))
-        {
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        // Step 1: Parse Resource — webhook sends user_product_id (variant), not item_id (MLA...)
-        var userProductId = ExtractUserProductId(resource);
-        if (string.IsNullOrWhiteSpace(userProductId))
-        {
-            _logger.LogWarning("V2: No se pudo extraer user_product_id de: {Resource}", resource);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        // Step 2: Resolve UserProductId → ItemId and get item to extract SKU (for FULL branch)
-        var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
-        string? sourceItemId = null;
-        MeliItem? sourceItem = null;
-        string? sku = null;
-        try
-        {
-            var search = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = userProductId });
-            sourceItemId = search?.Results?.FirstOrDefault()?.Id;
-            if (!string.IsNullOrWhiteSpace(sourceItemId))
-            {
-                var items = await _meliClient.GetItemsAsync([sourceItemId]);
-                sourceItem = items?.FirstOrDefault();
-                if (sourceItem != null)
-                {
-                    var variation = sourceItem.Variations?.FirstOrDefault(v => v.UserProductId == userProductId);
-                    sku = ExtractSku(sourceItem, variation);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "V2: No se pudo resolver UserProductId {UserProductId} a ItemId.", userProductId);
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        var ct = req.FunctionContext.CancellationToken;
-
-        // Step 3a: FULL branch — lookup by SKU, build sourceItems from rule Mappings
-        if (!string.IsNullOrWhiteSpace(sku))
-        {
-            var fullRules = await _stockRuleService.GetFullRulesBySkuAsync(sellerId, sku);
-            if (fullRules != null && fullRules.Count > 0)
-            {
-                _logger.LogInformation("V2: SKU {Sku} affects {Count} FULL rule(s).", sku, fullRules.Count);
-                foreach (var rule in fullRules)
-                {
-                    try
-                    {
-                        var sourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule, sku);
-                        if (sourceItems.Count == 0) continue;
-
-                        await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, StockRuleTypes.Full, fromWorker: false, ct);
-
-                        var finalTargetItemId = await ResolveTargetItemIdAsync(sellerId, rule.TargetItemId);
-                        if (string.IsNullOrWhiteSpace(finalTargetItemId)) continue;
-                        var targetItemsList = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });
-                        var targetItem = targetItemsList?.FirstOrDefault();
-                        if (targetItem == null) continue;
-                        if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem, ct)) continue;
-
-                        var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
-                        var updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
-                        foreach (var update in updates)
-                        {
-                            var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
-                            if (currentStock != null && currentStock.Value.Quantity != update.NewQuantity)
-                            {
-                                _logger.LogInformation("V2: FULL — Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
-                                await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "V2: Error processing FULL rule for target {TargetId}", rule.TargetItemId);
-                    }
-                }
-            }
-        }
-
-        // Step 3b: PACK/COMBO branch — lookup by SourceItemId (reverse index)
-        if (string.IsNullOrWhiteSpace(sourceItemId))
-        {
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        var affectedIndexes = await _stockRuleService.GetAffectedRulesBySourceAsync(sourceItemId);
-        if (affectedIndexes == null || affectedIndexes.Count == 0)
-        {
-            return req.CreateResponse(HttpStatusCode.OK);
-        }
-
-        _logger.LogInformation("V2: Source ItemId {ItemId} affects {Count} PACK/COMBO rule(s).", sourceItemId, affectedIndexes.Count);
-
-        foreach (var index in affectedIndexes)
-        {
-            var targetItemId = index.RowKey;
-            try
-            {
-                var rule = await _stockRuleService.GetRuleAsync(sellerId, targetItemId);
-                if (rule == null) continue;
-
-                rule.Mappings = [.. rule.Mappings
-                    .Where(m =>
-                            m.SourceMatches.Any(sm => sm.SourceVariantId == userProductId) ||
-                            (m.MatchSize != null && m.MatchSize.Equals(PackStockCalculator.ParseSizeFromSku(sku), StringComparison.OrdinalIgnoreCase)))];
-
-                var components = rule.Components;
-                if (components == null || components.Count == 0) continue; // FULL handled above
-
-                var itemsId = components
-                    .Select(c => c.SourceItemId)
-                    .Where(id => !string.IsNullOrWhiteSpace(id));
-                var items = await _meliClient.GetItemsAsync(itemsId);
-
-                var mappingsSourceMatches = rule.Mappings.SelectMany(m => m.SourceMatches).Select(sm => sm.SourceVariantId);
-                var mappingsSizeMatches = rule.Mappings.Where(m => m.MatchSize is not null).Select(m => m.MatchSize!);
-                var sourceItems = items.Select(i =>
-                {
-                    i.Variations = i.Variations?
-                        .Where(v => mappingsSourceMatches.Any(msm => msm.Equals(v.UserProductId, StringComparison.OrdinalIgnoreCase)) ||
-                                    mappingsSizeMatches.Any(msm => msm.Equals(PackStockCalculator.ParseSizeFromSku(v.SellerSku), StringComparison.OrdinalIgnoreCase)))
-                        .ToList() ?? [];
-                    return i;
-                }).ToList();
-
-                if (sourceItems.Count == 0) continue;
-
-                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, rule.RuleType, fromWorker: false, ct);
-
-                var finalTargetItemId = await ResolveTargetItemIdAsync(sellerId, targetItemId);
-                if (string.IsNullOrWhiteSpace(finalTargetItemId)) continue;
-                var targetItemsToCheck = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });
-                var targetItem = targetItemsToCheck?.FirstOrDefault();
-                if (targetItem == null) continue;
-                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem, ct)) continue;
-
-                var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
-                var updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
-                foreach (var update in updates)
-                {
-                    var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
-                    if (currentStock != null && currentStock.Value.Quantity != update.NewQuantity)
-                    {
-                        _logger.LogInformation("V2: Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
-                        await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "V2: Error processing target {TargetId}", targetItemId);
-            }
-        }
-
-        return req.CreateResponse(HttpStatusCode.OK);
-    }
-
-    private async Task<string?> ResolveTargetItemIdAsync(string sellerId, string targetItemId)
-    {
-        if (string.IsNullOrWhiteSpace(targetItemId)) return null;
-        if (targetItemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase)) return targetItemId;
-        var upSearch = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = targetItemId });
-        return upSearch?.Results?.FirstOrDefault()?.Id;
     }
 }
 

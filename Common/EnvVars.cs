@@ -26,6 +26,7 @@ public static class EnvVars
         public const string DashboardLogsTableName = "DASHBOARD_LOGS_TABLE";
         public const string OrderExecutionTableName = "ORDER_EXECUTION_TABLE";
         public const string UseV2StockLogic = "USE_V2_STOCK_LOGIC";
+        public const string StockWebhookQueueName = "STOCK_WEBHOOK_QUEUE_NAME";
 
         public const string EnableJobIndexer = "ENABLE_JOB_INDEXER";
         public const string EnableJobFullDiscovery = "ENABLE_JOB_FULL_DISCOVERY";
