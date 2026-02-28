@@ -5,8 +5,6 @@ using meli_znube_integration.Services;
 using meli_znube_integration.Services.Calculators;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Polly;
-using Polly.Extensions.Http;
 
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureFunctionsWorkerDefaults()
@@ -50,7 +48,6 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddTransient<MeliTokenHandler>();
         services.AddSingleton<MeliRateLimiter>();
         services.AddTransient<MeliRateLimitHandler>();
-        services.AddSingleton<StockMappingService>();
         services.AddSingleton<StockRuleService>();
         services.AddSingleton<IDashboardLogService, DashboardLogService>();
         services.AddSingleton<StockLocationQueueService>();

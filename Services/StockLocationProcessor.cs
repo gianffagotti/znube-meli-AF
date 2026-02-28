@@ -35,13 +35,13 @@ public class StockLocationProcessor
 
     public async Task ProcessAsync(string resource, CancellationToken ct)
     {
-        if (!EnvVars.GetBool(EnvVars.Keys.UseV2StockLogic, false))
+        if (!EnvVars.GetBool(EnvVars.Keys.EnableWebhookStock, false))
         {
-            _logger.LogWarning("V2 stock logic disabled; stock-locations webhook ignored.");
+            _logger.LogWarning("EnableWebhookStock disabled; stock-locations webhook ignored.");
             return;
         }
 
-        _logger.LogInformation("Executing V2 logic for stock notification. Resource: {Resource}", resource);
+        _logger.LogInformation("Executing logic for stock notification. Resource: {Resource}", resource);
 
         if (string.IsNullOrWhiteSpace(resource))
         {
@@ -51,7 +51,7 @@ public class StockLocationProcessor
         var userProductId = StockLocationHelpers.ExtractUserProductId(resource);
         if (string.IsNullOrWhiteSpace(userProductId))
         {
-            _logger.LogWarning("V2: No se pudo extraer user_product_id de: {Resource}", resource);
+            _logger.LogWarning("No se pudo extraer user_product_id de: {Resource}", resource);
             return;
         }
 
@@ -76,7 +76,7 @@ public class StockLocationProcessor
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "V2: No se pudo resolver UserProductId {UserProductId} a ItemId.", userProductId);
+            _logger.LogWarning(ex, "No se pudo resolver UserProductId {UserProductId} a ItemId.", userProductId);
             return;
         }
 
@@ -85,7 +85,7 @@ public class StockLocationProcessor
             var fullRules = await _stockRuleService.GetFullRulesBySkuAsync(sellerId, sku);
             if (fullRules != null && fullRules.Count > 0)
             {
-                _logger.LogInformation("V2: SKU {Sku} affects {Count} FULL rule(s).", sku, fullRules.Count);
+                _logger.LogInformation("SKU {Sku} affects {Count} FULL rule(s).", sku, fullRules.Count);
                 foreach (var rule in fullRules)
                 {
                     try
@@ -111,7 +111,7 @@ public class StockLocationProcessor
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "V2: Error processing FULL rule for target {TargetId}", rule.TargetItemId);
+                        _logger.LogError(ex, "Error processing FULL rule for target {TargetId}", rule.TargetItemId);
                     }
                 }
             }
@@ -128,7 +128,7 @@ public class StockLocationProcessor
             return;
         }
 
-        _logger.LogInformation("V2: Source ItemId {ItemId} affects {Count} PACK/COMBO rule(s).", sourceItemId, affectedIndexes.Count);
+        _logger.LogInformation("Source ItemId {ItemId} affects {Count} PACK/COMBO rule(s).", sourceItemId, affectedIndexes.Count);
 
         foreach (var index in affectedIndexes)
         {
@@ -181,7 +181,7 @@ public class StockLocationProcessor
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "V2: Error calculating stock for target {TargetId}", targetItemId);
+                    _logger.LogError(ex, "Error calculating stock for target {TargetId}", targetItemId);
                     if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
                     {
                         await LogPackErrorAsync(ex, targetItemId, null, sku, null, null, "calculate", ct);
@@ -196,7 +196,7 @@ public class StockLocationProcessor
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "V2: Error processing target {TargetId}", targetItemId);
+                _logger.LogError(ex, "Error processing target {TargetId}", targetItemId);
             }
         }
     }
@@ -209,12 +209,23 @@ public class StockLocationProcessor
             return;
         }
 
+        var dryRun = EnvVars.GetBool(EnvVars.Keys.DryRun, false);
+        if (dryRun)
+        {
+            _logger.LogInformation(
+                "DRY_RUN: would update Target Variant {TargetVariantId}: {OldQty} -> {NewQty}",
+                update.TargetVariantId,
+                currentStock.Value.Quantity,
+                update.NewQuantity);
+            return;
+        }
+
         try
         {
             var success = await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version, ct);
             if (!success)
             {
-                _logger.LogWarning("V2: Conflict updating Target Variant {TargetVariantId}.", update.TargetVariantId);
+                _logger.LogWarning("Conflict updating Target Variant {TargetVariantId}.", update.TargetVariantId);
                 if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
                 {
                     await LogPackErrorAsync(null, targetItemId, update.TargetVariantId, ResolveTargetSku(targetItem, update.TargetVariantId), currentStock.Value.Quantity, update.NewQuantity, "update_conflict", ct);
@@ -222,12 +233,12 @@ public class StockLocationProcessor
                 return;
             }
 
-            _logger.LogInformation("V2: Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
+            _logger.LogInformation("Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
             await LogStockUpdateInfoAsync(targetItemId, update.TargetVariantId, ResolveTargetSku(targetItem, update.TargetVariantId), currentStock.Value.Quantity, update.NewQuantity, ct);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "V2: Error updating Target Variant {TargetVariantId}", update.TargetVariantId);
+            _logger.LogError(ex, "Error updating Target Variant {TargetVariantId}", update.TargetVariantId);
             if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
             {
                 await LogPackErrorAsync(ex, targetItemId, update.TargetVariantId, ResolveTargetSku(targetItem, update.TargetVariantId), currentStock.Value.Quantity, update.NewQuantity, "update_exception", ct);
