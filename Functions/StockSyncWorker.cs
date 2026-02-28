@@ -6,6 +6,7 @@ using meli_znube_integration.Services;
 using meli_znube_integration.Services.Calculators;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace meli_znube_integration.Functions;
 
@@ -15,6 +16,7 @@ public class StockSyncWorker
     private readonly IMeliApiClient _meliClient;
     private readonly IStockSyncSourceService _stockSyncSourceService;
     private readonly StockCalculatorFactory _calculatorFactory;
+    private readonly IDashboardLogService _dashboardLogService;
     private readonly ILogger<StockSyncWorker> _logger;
 
     public StockSyncWorker(
@@ -22,12 +24,14 @@ public class StockSyncWorker
         IMeliApiClient meliClient,
         IStockSyncSourceService stockSyncSourceService,
         StockCalculatorFactory calculatorFactory,
+        IDashboardLogService dashboardLogService,
         ILogger<StockSyncWorker> logger)
     {
         _stockRuleService = stockRuleService;
         _meliClient = meliClient;
         _stockSyncSourceService = stockSyncSourceService;
         _calculatorFactory = calculatorFactory;
+        _dashboardLogService = dashboardLogService;
         _logger = logger;
     }
 
@@ -130,8 +134,21 @@ public class StockSyncWorker
                     return;
                 }
 
-                var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
-                var updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
+                List<VariantStockUpdate> updates;
+                try
+                {
+                    var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
+                    updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error calculating stock for target {TargetItemId}", rule.TargetItemId);
+                    if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
+                    {
+                        await LogPackErrorAsync(ex, finalTargetItemId, null, null, null, null, "calculate", ct);
+                    }
+                    return;
+                }
                 foreach (var update in updates)
                 {
                     var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
@@ -144,11 +161,66 @@ public class StockSyncWorker
                                 update.TargetVariantId,
                                 currentStock.Value.Quantity,
                                 update.NewQuantity);
+
+                            await LogStockUpdateInfoAsync(
+                                finalTargetItemId,
+                                update.TargetVariantId,
+                                ResolveTargetSku(targetItem, update.TargetVariantId),
+                                currentStock.Value.Quantity,
+                                update.NewQuantity,
+                                ct);
                         }
                         else
                         {
-                            _logger.LogInformation("Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
-                            await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version, ct);
+                            try
+                            {
+                                var success = await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version, ct);
+                                if (!success)
+                                {
+                                    _logger.LogWarning("Conflict updating Target Variant {TargetVariantId}.", update.TargetVariantId);
+                                    if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        await LogPackErrorAsync(
+                                            null,
+                                            finalTargetItemId,
+                                            update.TargetVariantId,
+                                            ResolveTargetSku(targetItem, update.TargetVariantId),
+                                            currentStock.Value.Quantity,
+                                            update.NewQuantity,
+                                            "update_conflict",
+                                            ct);
+                                    }
+                                    continue;
+                                }
+
+                                _logger.LogInformation("Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
+                                if (isFullRule || string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await LogStockUpdateInfoAsync(
+                                        finalTargetItemId,
+                                        update.TargetVariantId,
+                                        ResolveTargetSku(targetItem, update.TargetVariantId),
+                                        currentStock.Value.Quantity,
+                                        update.NewQuantity,
+                                        ct);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "Error updating Target Variant {TargetVariantId}", update.TargetVariantId);
+                                if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await LogPackErrorAsync(
+                                        ex,
+                                        finalTargetItemId,
+                                        update.TargetVariantId,
+                                        ResolveTargetSku(targetItem, update.TargetVariantId),
+                                        currentStock.Value.Quantity,
+                                        update.NewQuantity,
+                                        "update_exception",
+                                        ct);
+                                }
+                            }
                         }
                     }
                 }
@@ -160,5 +232,54 @@ public class StockSyncWorker
         });
 
         _logger.LogInformation("Stock Sync finished at: {Time}", DateTime.Now);
+    }
+
+    private async Task LogStockUpdateInfoAsync(string targetItemId, string targetVariantId, string? sku, int oldQty, int newQty, CancellationToken ct)
+    {
+        var details = JsonSerializer.Serialize(new
+        {
+            targetItemId,
+            targetVariantId,
+            sku,
+            oldQty,
+            newQty
+        });
+
+        await _dashboardLogService.AppendLogAsync(
+            severity: "Info",
+            category: "StockSyncWebhook",
+            message: $"Stock actualizado para publicación {targetItemId}, SKU {sku}.",
+            detailsJson: details,
+            entityIds: new[] { targetItemId, targetVariantId },
+            cancellationToken: ct);
+    }
+
+    private async Task LogPackErrorAsync(Exception? ex, string targetItemId, string? targetVariantId, string? sku, int? oldQty, int? newQty, string stage, CancellationToken ct)
+    {
+        var details = JsonSerializer.Serialize(new
+        {
+            targetItemId,
+            targetVariantId,
+            sku,
+            oldQty,
+            newQty,
+            stage,
+            exception = ex?.ToString()
+        });
+
+        await _dashboardLogService.AppendLogAsync(
+            severity: "Error",
+            category: "StockSyncWebhook",
+            message: $"Error actualizando stock de PACK para publicación {targetItemId}, SKU {sku}.",
+            detailsJson: details,
+            entityIds: targetVariantId != null ? new[] { targetItemId, targetVariantId } : new[] { targetItemId },
+            cancellationToken: ct);
+    }
+
+    private static string? ResolveTargetSku(MeliItem targetItem, string targetVariantId)
+    {
+        var variation = targetItem.Variations?.FirstOrDefault(v =>
+            string.Equals(v.UserProductId, targetVariantId, StringComparison.OrdinalIgnoreCase));
+        return StockLocationHelpers.ExtractSku(targetItem, variation);
     }
 }
