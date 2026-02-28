@@ -26,6 +26,7 @@ public static class EnvVars
         public const string EnableWebhookStock = "ENABLE_WEBHOOK_STOCK";
         public const string StockWebhookQueueName = "STOCK_WEBHOOK_QUEUE_NAME";
         public const string OrdersWebhookQueueName = "ORDERS_WEBHOOK_QUEUE_NAME";
+        public const string FullRuleDiscoveryQueueName = "FULL_RULE_DISCOVERY_QUEUE_NAME";
 
         public const string EnableJobFullDiscovery = "ENABLE_JOB_FULL_DISCOVERY";
         public const string EnableJobSync = "ENABLE_JOB_SYNC";

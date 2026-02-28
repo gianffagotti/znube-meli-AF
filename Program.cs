@@ -50,6 +50,9 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddTransient<MeliRateLimitHandler>();
         services.AddSingleton<StockRuleService>();
         services.AddSingleton<IDashboardLogService, DashboardLogService>();
+        services.AddSingleton<FullRuleDiscoveryStateService>();
+        services.AddSingleton<FullRuleDiscoveryQueueService>();
+        services.AddScoped<FullRuleDiscoveryService>();
         services.AddSingleton<StockLocationQueueService>();
         services.AddSingleton<OrderQueueService>();
         services.AddScoped<StockLocationProcessor>();
