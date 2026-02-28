@@ -1,3 +1,4 @@
+using System;
 using System.Text.Json;
 using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
@@ -9,11 +10,19 @@ namespace meli_znube_integration.Functions;
 public class StockLocationQueueWorker
 {
     private readonly StockLocationProcessor _processor;
+    private readonly OrderQueueService _orderQueueService;
+    private readonly StockLocationQueueService _stockLocationQueueService;
     private readonly ILogger<StockLocationQueueWorker> _logger;
 
-    public StockLocationQueueWorker(StockLocationProcessor processor, ILogger<StockLocationQueueWorker> logger)
+    public StockLocationQueueWorker(
+        StockLocationProcessor processor,
+        OrderQueueService orderQueueService,
+        StockLocationQueueService stockLocationQueueService,
+        ILogger<StockLocationQueueWorker> logger)
     {
         _processor = processor;
+        _orderQueueService = orderQueueService;
+        _stockLocationQueueService = stockLocationQueueService;
         _logger = logger;
     }
 
@@ -22,6 +31,17 @@ public class StockLocationQueueWorker
         [QueueTrigger("%STOCK_WEBHOOK_QUEUE_NAME%", Connection = "AZURE_STORAGE_CONNECTION_STRING")] string message,
         FunctionContext context)
     {
+        var pendingOrders = await _orderQueueService.GetPendingOrdersCountAsync(context.CancellationToken);
+        if (pendingOrders > 0)
+        {
+            _logger.LogInformation("Órdenes pendientes detectadas. Pospaniendo la sincronización de stock por 30 segundos.");
+            await _stockLocationQueueService.ReenqueueWithDelayAsync(
+                message,
+                TimeSpan.FromSeconds(30),
+                context.CancellationToken);
+            return;
+        }
+
         StockLocationQueueMessage? payload;
         try
         {

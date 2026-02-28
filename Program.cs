@@ -51,6 +51,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<StockRuleService>();
         services.AddSingleton<IDashboardLogService, DashboardLogService>();
         services.AddSingleton<StockLocationQueueService>();
+        services.AddSingleton<OrderQueueService>();
         services.AddScoped<StockLocationProcessor>();
         services.AddScoped<IStockSyncSourceService, StockSyncSourceService>();
         services.AddSingleton<ISkuParser, SkuParserService>();

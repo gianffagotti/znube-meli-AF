@@ -5,14 +5,14 @@ using System.Text.Json;
 
 namespace meli_znube_integration.Services;
 
-public class StockLocationQueueService
+public class OrderQueueService
 {
     private readonly QueueClient _queueClient;
 
-    public StockLocationQueueService()
+    public OrderQueueService()
     {
         var connectionString = EnvVars.GetRequiredString(EnvVars.Keys.AzureStorageConnectionString);
-        var queueName = EnvVars.GetRequiredString(EnvVars.Keys.StockWebhookQueueName);
+        var queueName = EnvVars.GetRequiredString(EnvVars.Keys.OrdersWebhookQueueName);
 
         // AGREGAR ESTAS OPCIONES: Obliga al cliente a usar Base64
         var options = new QueueClientOptions
@@ -25,7 +25,7 @@ public class StockLocationQueueService
         _queueClient.CreateIfNotExists();
     }
 
-    public async Task EnqueueAsync(StockLocationQueueMessage message, CancellationToken cancellationToken = default)
+    public async Task EnqueueAsync(OrderQueueMessage message, CancellationToken cancellationToken = default)
     {
         if (message == null) return;
         var json = JsonSerializer.Serialize(message);
@@ -34,14 +34,9 @@ public class StockLocationQueueService
         await _queueClient.SendMessageAsync(json, cancellationToken);
     }
 
-    public async Task ReenqueueWithDelayAsync(
-        string message,
-        TimeSpan visibilityTimeout,
-        CancellationToken cancellationToken = default)
+    public async Task<int> GetPendingOrdersCountAsync(CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(message)) return;
-
-        // QueueClient ya está configurado para Base64.
-        await _queueClient.SendMessageAsync(message, visibilityTimeout: visibilityTimeout, cancellationToken: cancellationToken);
+        var properties = await _queueClient.GetPropertiesAsync(cancellationToken);
+        return properties.Value.ApproximateMessagesCount;
     }
 }

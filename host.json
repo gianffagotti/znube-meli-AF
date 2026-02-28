@@ -8,5 +8,11 @@
             },
             "enableLiveMetricsFilters": true
         }
+    },
+    "extensions": {
+        "queues": {
+            "batchSize": 16,
+            "newBatchThreshold": 8
+        }
     }
 }
