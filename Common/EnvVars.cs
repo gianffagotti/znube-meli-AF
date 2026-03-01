@@ -15,22 +15,21 @@ public static class EnvVars
         public const string MeliSellerId = "MELI_SELLER_ID";
 
         public const string AzureStorageConnectionString = "AZURE_STORAGE_CONNECTION_STRING";
-        public const string LocksContainer = "LOCKS_CONTAINER";
         public const string TokensContainer = "TOKENS_CONTAINER";
         public const string TokensBlobName = "TOKENS_BLOB_NAME";
 
         public const string SendBuyerMessage = "SEND_BUYER_MESSAGE";
-        public const string UpsertOrderNote = "UPSERT_ORDER_NOTE";
         public const string StockRulesTableName = "STOCK_RULES_TABLE";
         public const string StockSkuIndexTableName = "STOCK_SKU_INDEX_TABLE";
         public const string DashboardLogsTableName = "DASHBOARD_LOGS_TABLE";
         public const string OrderExecutionTableName = "ORDER_EXECUTION_TABLE";
-        public const string UseV2StockLogic = "USE_V2_STOCK_LOGIC";
+        public const string EnableWebhookStock = "ENABLE_WEBHOOK_STOCK";
+        public const string StockWebhookQueueName = "STOCK_WEBHOOK_QUEUE_NAME";
+        public const string OrdersWebhookQueueName = "ORDERS_WEBHOOK_QUEUE_NAME";
+        public const string FullRuleDiscoveryQueueName = "FULL_RULE_DISCOVERY_QUEUE_NAME";
 
-        public const string EnableJobIndexer = "ENABLE_JOB_INDEXER";
         public const string EnableJobFullDiscovery = "ENABLE_JOB_FULL_DISCOVERY";
-        public const string EnableJobSyncV1 = "ENABLE_JOB_SYNC_V1";
-        public const string EnableJobSyncV2 = "ENABLE_JOB_SYNC_V2";
+        public const string EnableJobSync = "ENABLE_JOB_SYNC";
         public const string DryRun = "DRY_RUN";
     }
 

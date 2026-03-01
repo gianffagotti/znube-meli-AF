@@ -16,7 +16,6 @@ public class PackProcessor
     private readonly ILogger<PackProcessor> _logger;
 
     private static readonly bool SendBuyerMessageEnabled = EnvVars.GetBool(EnvVars.Keys.SendBuyerMessage, true);
-    private static readonly bool UpsertOrderNoteEnabled = EnvVars.GetBool(EnvVars.Keys.UpsertOrderNote, true);
 
     public PackProcessor(
         MeliAuth auth,
@@ -67,8 +66,9 @@ public class PackProcessor
         if (string.IsNullOrWhiteSpace(last.Id))
             return (null, null);
 
+        var dryRun = EnvVars.GetBool(EnvVars.Keys.DryRun, false);
         var notes = await _meli.GetOrderNotesAsync(last.Id!);
-        if (notes.Count != 0)
+        if (!dryRun && notes.Count != 0)
         {
             return (null, null);
         }
@@ -127,9 +127,8 @@ public class PackProcessor
             return (orderIdFromWebhook, null);
         var final = _noteContentBuilder.BuildFinalNote(body);
 
-        bool upserted = false;
-        if (UpsertOrderNoteEnabled)
-            upserted = await _notePersisterService.CreateOrderNoteAsync(last.Id!, final);
+        var dryRun = EnvVars.GetBool(EnvVars.Keys.DryRun, false);
+        var upserted = await _notePersisterService.CreateOrderNoteAsync(last.Id!, final);
         try
         {
             if (upserted && SendBuyerMessageEnabled)
@@ -138,7 +137,14 @@ public class PackProcessor
                 var messageTargetId = isPack ? packId : orderIdFromWebhook;
                 if (!string.IsNullOrWhiteSpace(messageTargetId))
                 {
-                    await _meli.SendMessageAsync(messageTargetId!, BuildActionGuideMessage(buyerNameUpper));
+                    if (dryRun)
+                    {
+                        _logger.LogInformation("DRY_RUN: would send buyer message for {TargetId}", messageTargetId);
+                    }
+                    else
+                    {
+                        await _meli.SendMessageAsync(messageTargetId!, BuildActionGuideMessage(buyerNameUpper));
+                    }
                 }
             }
         }

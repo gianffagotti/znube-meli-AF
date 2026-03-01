@@ -1,6 +1,4 @@
-using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
-using meli_znube_integration.Models;
 using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
@@ -11,28 +9,24 @@ using System.Text.Json;
 
 namespace meli_znube_integration.Functions;
 
-internal sealed class DiscoveryResult { public int Processed; public int Created; public int Incomplete; }
-internal sealed class ProcessItemResult { public bool Saved; public bool IsIncomplete; }
-
-/// <summary>Replaces StockMappingIndexer. Scans MELI for fulfillment items, validates SKUs in Znube, saves FULL rules and StockSkuIndex. Spec 05.</summary>
 public class FullRuleDiscoveryJob
 {
-    private readonly IMeliApiClient _meliClient;
-    private readonly IZnubeApiClient _znubeClient;
-    private readonly StockRuleService _stockRuleService;
+    private readonly FullRuleDiscoveryService _discoveryService;
+    private readonly FullRuleDiscoveryStateService _state;
+    private readonly FullRuleDiscoveryQueueService _queue;
     private readonly IDashboardLogService _dashboardLogService;
     private readonly ILogger<FullRuleDiscoveryJob> _logger;
 
     public FullRuleDiscoveryJob(
-        IMeliApiClient meliClient,
-        IZnubeApiClient znubeClient,
-        StockRuleService stockRuleService,
+        FullRuleDiscoveryService discoveryService,
+        FullRuleDiscoveryStateService state,
+        FullRuleDiscoveryQueueService queue,
         IDashboardLogService dashboardLogService,
         ILogger<FullRuleDiscoveryJob> logger)
     {
-        _meliClient = meliClient;
-        _znubeClient = znubeClient;
-        _stockRuleService = stockRuleService;
+        _discoveryService = discoveryService;
+        _state = state;
+        _queue = queue;
         _dashboardLogService = dashboardLogService;
         _logger = logger;
     }
@@ -48,21 +42,69 @@ public class FullRuleDiscoveryJob
             return;
         }
 
+        var run = _state.TryStartRun("automatic");
+        if (run == null)
+        {
+            var current = _state.GetCurrentRun();
+            _logger.LogInformation("Full Rule Discovery already running. Mode: {Mode}.", current?.Mode);
+            return;
+        }
+
+        await _dashboardLogService.AppendLogAsync(
+            "Info",
+            "FullRuleDiscovery",
+            "Full Rule Discovery iniciado (automático).",
+            JsonSerializer.Serialize(new { runId = run.RunId, mode = run.Mode }),
+            null,
+            CancellationToken.None);
+
         try
         {
-            var result = await ExecuteDiscoveryAsync(CancellationToken.None);
-            var processed = result.Processed;
-            var created = result.Created;
-            var incomplete = result.Incomplete;
+            var token = _state.GetCancellationToken(run.RunId);
+            var (processed, created, incomplete) = await _discoveryService.ExecuteDiscoveryAsync(
+                token,
+                () => _state.RefreshHeartbeat(run.RunId));
+
+            var result = new FullRuleDiscoveryResultResponse
+            {
+                RunId = run.RunId,
+                Mode = run.Mode,
+                Status = "completed",
+                Processed = processed,
+                Created = created,
+                Incomplete = incomplete,
+                StartedAt = run.StartedAt,
+                CompletedAt = DateTimeOffset.UtcNow
+            };
+            _state.FinalizeSuccess(run.RunId, result);
+
             _logger.LogInformation("Full Rule Discovery finished. Processed: {Processed}, FULL rules created: {Created}, Incomplete: {Incomplete}.",
                 processed, created, incomplete);
-            var summaryMessage = "Full Rule Discovery finalizado. Publicaciones procesadas: " + processed + ". Reglas FULL creadas: " + created + ". Reglas incompletas: " + incomplete + ".";
-            var detailsJson = JsonSerializer.Serialize(new { processed, created, incomplete });
-            await _dashboardLogService.AppendLogAsync("Info", "FullRuleDiscovery", summaryMessage, detailsJson, null, CancellationToken.None);
+            await AppendSummaryLogAsync(result, CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Full Rule Discovery cancelled.");
+            _state.FinalizeCancelled(run.RunId, "Cancelado por usuario.");
+            await _dashboardLogService.AppendLogAsync(
+                "Warning",
+                "FullRuleDiscovery",
+                "Full Rule Discovery cancelado por usuario. No se hace rollback.",
+                JsonSerializer.Serialize(new { runId = run.RunId, mode = run.Mode }),
+                null,
+                CancellationToken.None);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Full Rule Discovery job failed.");
+            _state.FinalizeFailure(run.RunId, ex.Message);
+            await _dashboardLogService.AppendLogAsync(
+                "Error",
+                "FullRuleDiscovery",
+                "Full Rule Discovery falló.",
+                JsonSerializer.Serialize(new { runId = run.RunId, mode = run.Mode, error = ex.Message }),
+                null,
+                CancellationToken.None);
             throw;
         }
     }
@@ -78,195 +120,98 @@ public class FullRuleDiscoveryJob
             return disabled;
         }
 
-        try
+        var run = _state.TryStartRun("manual");
+        if (run == null)
         {
-            var result = await ExecuteDiscoveryAsync(req.FunctionContext.CancellationToken);
-            var processed = result.Processed;
-            var created = result.Created;
-            var incomplete = result.Incomplete;
-            var summaryMessage = "Full Rule Discovery finalizado. Publicaciones procesadas: " + processed + ". Reglas FULL creadas: " + created + ". Reglas incompletas: " + incomplete + ".";
-            var detailsJson = JsonSerializer.Serialize(new { processed, created, incomplete });
-            await _dashboardLogService.AppendLogAsync("Info", "FullRuleDiscovery", summaryMessage, detailsJson, null, req.FunctionContext.CancellationToken);
+            var current = _state.GetCurrentRun();
+            await _dashboardLogService.AppendLogAsync(
+                "Warning",
+                "FullRuleDiscovery",
+                "Ejecución manual bloqueada: ya hay un proceso en curso.",
+                JsonSerializer.Serialize(new { runId = current?.RunId, mode = current?.Mode, status = current?.Status }),
+                null,
+                req.FunctionContext.CancellationToken);
 
-            var response = req.CreateResponse(HttpStatusCode.OK);
-            await response.WriteAsJsonAsync(new { processed, created, incomplete, message = "Discovery completed." });
-            return response;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "DiscoverFullRules HTTP execution failed.");
-            var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await errorResponse.WriteAsJsonAsync(new { error = "Discovery failed.", message = ex.Message });
-            return errorResponse;
-        }
-    }
-
-    private async Task<DiscoveryResult> ExecuteDiscoveryAsync(CancellationToken ct)
-    {
-        var sellerId = long.Parse(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId));
-        var sellerIdStr = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
-        int processed = 0, created = 0, incomplete = 0;
-        string? scrollId = null;
-        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 2 };
-
-        while (true)
-        {
-            MeliScanResponseDto? scanResult;
-            try
+            var conflict = req.CreateResponse(HttpStatusCode.Conflict);
+            await conflict.WriteAsJsonAsync(new
             {
-                scanResult = await _meliClient.ScanItemsAsync(sellerId, scrollId, ct);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error scanning items. Aborting.");
-                break;
-            }
-
-            if (scanResult?.Results == null || scanResult.Results.Count == 0)
-                break;
-
-            scrollId = scanResult.ScrollId;
-            var chunks = scanResult.Results.Chunk(10);
-
-            await Parallel.ForEachAsync(chunks, parallelOptions, async (chunk, cancellationToken) =>
-            {
-                try
-                {
-                    var items = await _meliClient.GetItemsAsync(chunk, cancellationToken);
-                    foreach (var item in items ?? new List<MeliItem>())
-                    {
-                        Interlocked.Increment(ref processed);
-                        var processResult = await ProcessFulfillmentItemAsync(item, sellerIdStr, cancellationToken);
-                        var saved = processResult.Saved;
-                        var isIncomplete = processResult.IsIncomplete;
-                        if (saved)
-                        {
-                            Interlocked.Increment(ref created);
-                            if (isIncomplete) Interlocked.Increment(ref incomplete);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error processing chunk. Trying one-by-one.");
-                    foreach (var id in chunk)
-                    {
-                        try
-                        {
-                            var single = await _meliClient.GetItemsAsync(new[] { id }, cancellationToken);
-                            if (single != null && single.Count > 0)
-                            {
-                                Interlocked.Increment(ref processed);
-                                var processResult = await ProcessFulfillmentItemAsync(single[0], sellerIdStr, cancellationToken);
-                                var saved = processResult.Saved;
-                                var isIncomplete = processResult.IsIncomplete;
-                                if (saved) { Interlocked.Increment(ref created); if (isIncomplete) Interlocked.Increment(ref incomplete); }
-                            }
-                        }
-                        catch (Exception inner) { _logger.LogError(inner, "Error processing item {Id}.", id); }
-                    }
-                }
+                message = "Ya existe una ejecución en curso.",
+                runId = current?.RunId,
+                mode = current?.Mode,
+                status = current?.Status
             });
+            return conflict;
         }
 
-        return new DiscoveryResult { Processed = processed, Created = created, Incomplete = incomplete };
+        await _dashboardLogService.AppendLogAsync(
+            "Info",
+            "FullRuleDiscovery",
+            "Full Rule Discovery iniciado (manual).",
+            JsonSerializer.Serialize(new { runId = run.RunId, mode = run.Mode }),
+            null,
+            req.FunctionContext.CancellationToken);
+
+        await _queue.EnqueueAsync(new FullRuleDiscoveryQueueMessage
+        {
+            RunId = run.RunId,
+            Mode = run.Mode,
+            RequestedAtUtc = DateTimeOffset.UtcNow
+        }, req.FunctionContext.CancellationToken);
+
+        var response = req.CreateResponse(HttpStatusCode.Accepted);
+        await response.WriteAsJsonAsync(new FullRuleDiscoveryStartResponse
+        {
+            RunId = run.RunId,
+            Mode = run.Mode,
+            Status = "running",
+            StatusUrl = "/api/jobs/discover-full-rules/status"
+        });
+        return response;
     }
 
-    private async Task<ProcessItemResult> ProcessFulfillmentItemAsync(MeliItem item, string sellerId, CancellationToken ct)
+    [Function("DiscoverFullRulesStatus")]
+    public async Task<HttpResponseData> GetStatus(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "jobs/discover-full-rules/status")] HttpRequestData req)
     {
-        var logisticType = item.Shipping?.LogisticType;
-        if (string.IsNullOrWhiteSpace(logisticType) || !string.Equals(logisticType, "fulfillment", StringComparison.OrdinalIgnoreCase))
-        {
-            return new ProcessItemResult { Saved = false, IsIncomplete = false };
-        }
-
-        var existingRule = await _stockRuleService.GetRuleAsync(sellerId, item.Id);
-        var isPackOrCombo = existingRule != null && StockRuleTypes.IsPackOrCombo(existingRule.RuleType);
-        if (isPackOrCombo)
-        {
-            return new ProcessItemResult { Saved = false, IsIncomplete = false };
-        }
-
-        var mappings = new List<(string TargetVariantId, string TargetSku)>();
-        if (item.Variations != null && item.Variations.Count > 0)
-        {
-            foreach (var v in item.Variations)
-            {
-                var sku = ExtractSku(item, v);
-                if (!string.IsNullOrWhiteSpace(sku))
-                    mappings.Add((v.UserProductId ?? v.Id.ToString(), sku!));
-            }
-        }
-        else
-        {
-            var sku = ExtractSku(item, null);
-            if (!string.IsNullOrWhiteSpace(sku))
-                mappings.Add((item.UserProductId ?? item.Id, sku!));
-        }
-
-        if (mappings.Count == 0) return new ProcessItemResult { Saved = false, IsIncomplete = false };
-
-        var skusInZnube = new List<string>();
-        var skusMissing = new List<string>();
-        foreach (var m in mappings)
-        {
-            var sku = m.TargetSku;
-            var normalized = StockRuleService.NormalizeSku(sku);
-            var response = await _znubeClient.GetStockBySkuAsync(normalized, ct);
-            if (response?.Data != null && response.Data.TotalSku >= 1)
-                skusInZnube.Add(sku);
-            else
-                skusMissing.Add(sku);
-        }
-
-        if (skusInZnube.Count == 0)
-            return new ProcessItemResult { Saved = false, IsIncomplete = false };
-
-        var isIncomplete = skusMissing.Count > 0;
-        if (isIncomplete)
-        {
-            await _dashboardLogService.AppendLogAsync("Warning", "FullRuleDiscovery",
-                "Regla FULL incompleta: algunos SKUs no encontrados en Znube.",
-                JsonSerializer.Serialize(new { targetItemId = item.Id, targetTitle = item.Title, missingSkus = skusMissing }),
-                new[] { item.Id }, ct);
-        }
-
-        var targetSku = mappings[0].TargetSku;
-        var ruleDto = new StockRuleDto
-        {
-            TargetItemId = item.Id,
-            TargetTitle = item.Title ?? "",
-            TargetThumbnail = item.Thumbnail,
-            TargetSku = targetSku,
-            RuleType = StockRuleTypes.Full,
-            IsIncomplete = isIncomplete,
-            Components = new List<RuleComponentDto>(),
-            Mappings = mappings.Select(m => new VariantMappingDto
-            {
-                TargetVariantId = m.TargetVariantId,
-                TargetSku = m.TargetSku
-            }).ToList()
-        };
-
-        await _stockRuleService.SaveRuleAsync(ruleDto);
-        return new ProcessItemResult { Saved = true, IsIncomplete = isIncomplete };
+        var status = _state.GetStatus();
+        var response = req.CreateResponse(HttpStatusCode.OK);
+        await response.WriteAsJsonAsync(status);
+        return response;
     }
 
-    private static string? ExtractSku(MeliItem item, MeliVariation? variation)
+    [Function("DiscoverFullRulesCancel")]
+    public async Task<HttpResponseData> Cancel(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "jobs/discover-full-rules/cancel")] HttpRequestData req)
     {
-        if (variation != null)
+        var runId = req.Query["runId"];
+        var cancelled = _state.RequestCancel(runId, out var currentRunId);
+        if (!cancelled)
         {
-            var skuAttr = variation.Attributes?.FirstOrDefault(a => string.Equals(a.Id, MeliConstants.SellerSkuAttributeId, StringComparison.OrdinalIgnoreCase));
-            if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.Trim();
-            if (!string.IsNullOrWhiteSpace(variation.SellerCustomField)) return variation.SellerCustomField.Trim();
+            var conflict = req.CreateResponse(HttpStatusCode.Conflict);
+            await conflict.WriteAsJsonAsync(new FullRuleDiscoveryCancelResponse
+            {
+                Cancelled = false,
+                RunId = currentRunId,
+                Message = "No hay ejecución activa para cancelar."
+            });
+            return conflict;
         }
-        else
+
+        var response = req.CreateResponse(HttpStatusCode.OK);
+        await response.WriteAsJsonAsync(new FullRuleDiscoveryCancelResponse
         {
-            var skuAttr = item.Attributes?.FirstOrDefault(a => string.Equals(a.Id, MeliConstants.SellerSkuAttributeId, StringComparison.OrdinalIgnoreCase));
-            if (skuAttr != null && !string.IsNullOrWhiteSpace(skuAttr.ValueName)) return skuAttr.ValueName.Trim();
-            if (!string.IsNullOrWhiteSpace(item.SellerSku)) return item.SellerSku.Trim();
-            if (!string.IsNullOrWhiteSpace(item.SellerCustomField)) return item.SellerCustomField.Trim();
-        }
-        return null;
+            Cancelled = true,
+            RunId = currentRunId,
+            Message = "Cancelación solicitada."
+        });
+        return response;
+    }
+
+    private async Task AppendSummaryLogAsync(FullRuleDiscoveryResultResponse result, CancellationToken ct)
+    {
+        var summaryMessage = "Full Rule Discovery finalizado. Publicaciones procesadas: " + result.Processed
+            + ". Reglas FULL creadas: " + result.Created + ". Reglas incompletas: " + result.Incomplete + ".";
+        var detailsJson = JsonSerializer.Serialize(new { processed = result.Processed, created = result.Created, incomplete = result.Incomplete });
+        await _dashboardLogService.AppendLogAsync("Info", "FullRuleDiscovery", summaryMessage, detailsJson, null, ct);
     }
 }

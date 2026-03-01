@@ -1,263 +1,285 @@
-using Azure.Storage.Blobs;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
+using meli_znube_integration.Services.Calculators;
 using Microsoft.Azure.Functions.Worker;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace meli_znube_integration.Functions;
 
 public class StockSyncWorker
 {
-    private readonly ILogger<StockSyncWorker> _logger;
+    private readonly StockRuleService _stockRuleService;
     private readonly IMeliApiClient _meliClient;
     private readonly IStockSyncSourceService _stockSyncSourceService;
-    private readonly IConfiguration _configuration;
+    private readonly StockCalculatorFactory _calculatorFactory;
+    private readonly IDashboardLogService _dashboardLogService;
+    private readonly ILogger<StockSyncWorker> _logger;
 
-    public StockSyncWorker(ILogger<StockSyncWorker> logger, IMeliApiClient meliClient, IStockSyncSourceService stockSyncSourceService, IConfiguration configuration)
+    public StockSyncWorker(
+        StockRuleService stockRuleService,
+        IMeliApiClient meliClient,
+        IStockSyncSourceService stockSyncSourceService,
+        StockCalculatorFactory calculatorFactory,
+        IDashboardLogService dashboardLogService,
+        ILogger<StockSyncWorker> logger)
     {
-        _logger = logger;
+        _stockRuleService = stockRuleService;
         _meliClient = meliClient;
         _stockSyncSourceService = stockSyncSourceService;
-        _configuration = configuration;
-    }
-
-    //[Function("TestsWorker")]
-    public async Task TestsWorker([TimerTrigger("0 0 5,16 * * *", RunOnStartup = true)] TimerInfo myTimer)
-    {
-        try
-        {
-            var mappings = await LoadMappingsAsync();
-
-            var groupFlexItemIdWithFullItemIds = mappings
-                .Where(m => m.Flex != null && m.Full != null)
-                .GroupBy(m => m.Flex!.ItemId)
-                .ToDictionary(g => g.Key, g => g.Select(m => m.Full!.ItemId).Distinct().ToList())
-                .OrderByDescending(g => g.Value.Count)
-                .ToList();
-
-            var groupFlexItemIdWithFullItemIdsStringFormatted = groupFlexItemIdWithFullItemIds
-                .Select(g => $"Flex Item ID: {g.Key} -> Full Item IDs: [{string.Join(", ", g.Value)}]");
-
-            var groupFlexItemIdWithFullItemIdsStringText = string.Join(Environment.NewLine, groupFlexItemIdWithFullItemIdsStringFormatted);
-        }
-        catch (Exception)
-        {
-
-            throw;
-        }
+        _calculatorFactory = calculatorFactory;
+        _dashboardLogService = dashboardLogService;
+        _logger = logger;
     }
 
     [Function("StockSyncWorker")]
     public async Task Run([TimerTrigger("0 0 5,16 * * *")] TimerInfo myTimer)
     {
-        _logger.LogInformation("StockSyncWorker started.");
+        _logger.LogInformation("Starting Stock Sync at: {Time}", DateTime.Now);
 
-        if (!EnvVars.GetBool(EnvVars.Keys.EnableJobSyncV1, true))
+        if (!EnvVars.GetBool(EnvVars.Keys.EnableJobSync, true))
         {
-            _logger.LogWarning("Job 'StockSyncWorker' (V1) is disabled via configuration.");
+            _logger.LogWarning("Job 'StockSyncWorker' is disabled via configuration.");
             return;
         }
 
-        try
+        var dryRun = EnvVars.GetBool(EnvVars.Keys.DryRun, false);
+        var rules = await _stockRuleService.GetRulesBySellerAsync();
+        if (rules == null || rules.Count == 0)
         {
-            // 1. Read Mappings
-            var mappings = await LoadMappingsAsync();
-            _logger.LogInformation($"Loaded {mappings.Count} mappings.");
-
-            if (mappings.Count == 0)
-            {
-                _logger.LogWarning("No mappings found. Exiting.");
-                return;
-            }
-
-            // 2. Fetch Flex Stock (Source)
-            var sourceStock = await FetchFlexStockAsync(mappings);
-            _logger.LogInformation($"Fetched stock for {sourceStock.Count} flex items/variations.");
-
-            // 3. Sync Full Stock (Target)
-            await SyncFullStockAsync(mappings, sourceStock);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error in StockSyncWorker");
+            _logger.LogInformation("No stock rules found. Exiting.");
+            return;
         }
 
-        _logger.LogInformation("StockSyncWorker finished.");
-    }
+        _logger.LogInformation("Loaded {Count} rules.", rules.Count);
 
-    private async Task<List<StockMappingEntry>> LoadMappingsAsync()
-    {
-        var connString = _configuration[EnvVars.Keys.AzureStorageConnectionString];
-        if (string.IsNullOrWhiteSpace(connString))
-        {
-            _logger.LogError("Storage connection string not found.");
-            return [];
-        }
+        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 };
+        var sellerId = long.Parse(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId));
 
-        var containerClient = new BlobContainerClient(connString, "stock-mappings");
-        if (!await containerClient.ExistsAsync()) return [];
-
-        var mappings = new ConcurrentBag<StockMappingEntry>();
-
-        await foreach (var blob in containerClient.GetBlobsAsync())
+        await Parallel.ForEachAsync(rules, parallelOptions, async (rule, ct) =>
         {
             try
             {
-                var blobClient = containerClient.GetBlobClient(blob.Name);
-                var content = await blobClient.DownloadContentAsync();
-                var dict = JsonSerializer.Deserialize<Dictionary<string, StockMappingEntry>>(content.Value.Content.ToString(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                var targetItemId = rule.TargetItemId;
+                var isFullRule = StockRuleTypes.IsFull(rule.RuleType)
+                    && (rule.Components == null || rule.Components.Count == 0);
 
-                if (dict != null)
+                List<MeliItem> sourceItems;
+                if (isFullRule)
                 {
-                    foreach (var kvp in dict)
+                    // FULL: build synthetic source items from Mappings (SKU-only); Znube enriches by SKU.
+                    sourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule);
+                    if (sourceItems.Count == 0)
                     {
-                        kvp.Value.Sku = kvp.Key;
-                        mappings.Add(kvp.Value);
+                        _logger.LogWarning("FULL rule for Target {TargetItemId} has no mappings. Skipping.", targetItemId);
+                        return;
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Error reading blob {blob.Name}");
-            }
-        }
-
-        return mappings.ToList();
-    }
-
-    private async Task<Dictionary<string, int>> FetchFlexStockAsync(List<StockMappingEntry> mappings)
-    {
-        var flexItemIds = mappings
-            .Where(m => m.Flex != null && !string.IsNullOrWhiteSpace(m.Flex.ItemId))
-            .Select(m => m.Flex!.ItemId)
-            .Distinct()
-            .ToList();
-
-        var stockMap = new ConcurrentDictionary<string, int>();
-        var chunks = flexItemIds.Chunk(20);
-
-        await Parallel.ForEachAsync(chunks, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (chunk, ct) =>
-        {
-            try
-            {
-                var items = await _meliClient.GetItemsAsync(chunk);
-                foreach (var item in items)
+                else
                 {
-                    // Map Item ID -> Quantity (for simple items)
-                    stockMap.TryAdd(item.Id, item.AvailableQuantity);
-
-                    // Map Variation ID -> Quantity
-                    foreach (var variation in item.Variations)
+                    // PACK/COMBO: fetch source items from MELI by component IDs.
+                    var components = rule.Components;
+                    if (components == null || components.Count == 0)
                     {
-                        stockMap.TryAdd(variation.Id.ToString(), variation.AvailableQuantity);
+                        _logger.LogWarning("Rule for Target {TargetItemId} has no components. Skipping.", targetItemId);
+                        return;
                     }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error fetching flex items batch");
-            }
-        });
-
-        return stockMap.ToDictionary(k => k.Key, v => v.Value);
-    }
-
-    private async Task SyncFullStockAsync(List<StockMappingEntry> mappings, Dictionary<string, int> sourceStock)
-    {
-        var itemsToSync = mappings.Where(m => m.Full != null && m.Flex != null).ToList();
-
-        await Parallel.ForEachAsync(itemsToSync, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (mapping, ct) =>
-        {
-            await ProcessSingleSyncAsync(mapping, sourceStock);
-        });
-    }
-
-    private async Task ProcessSingleSyncAsync(StockMappingEntry mapping, Dictionary<string, int> sourceStock)
-    {
-        try
-        {
-            // Determine Source Quantity
-            int flexQuantity = 0;
-            string sourceKey = !string.IsNullOrWhiteSpace(mapping.Flex!.VariationId) ? mapping.Flex.VariationId! : mapping.Flex.ItemId;
-
-            if (!sourceStock.TryGetValue(sourceKey, out flexQuantity))
-            {
-                return;
-            }
-
-            string userProductId = mapping.Full!.UserProductId;
-            if (string.IsNullOrWhiteSpace(userProductId)) return;
-
-            // A. Get Current Stock
-            var currentStock = await _meliClient.GetUserProductStockAsync(userProductId);
-            if (currentStock == null) return;
-
-            var (fullQuantity, version) = currentStock.Value;
-
-            // B. Anti-FULL guard. Spec 03: do not update FULL-only (no selling_address).
-            var targetItems = await _meliClient.GetItemsAsync(new[] { mapping.Full.ItemId });
-            var targetItem = targetItems?.FirstOrDefault();
-            if (targetItem != null && await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem))
-            {
-                _logger.LogDebug("V1 Worker: Skipping FULL-only target ItemId {ItemId} (no selling_address).", mapping.Full.ItemId);
-                return;
-            }
-
-            // C. Compare
-            if (fullQuantity == flexQuantity) return;
-
-            // D. Update
-            _logger.LogInformation($"Updating SKU {mapping.Sku} (ItemID: {mapping.Full.ItemId}, UP: {userProductId}): Flex({flexQuantity}) vs Full({fullQuantity}).");
-
-            bool success = await _meliClient.UpdateUserProductStockAsync(userProductId, flexQuantity, version);
-
-            if (!success)
-            {
-                // Retry once logic
-                _logger.LogWarning($"Conflict updating {userProductId}. Retrying...");
-                currentStock = await _meliClient.GetUserProductStockAsync(userProductId);
-                if (currentStock != null)
-                {
-                    (fullQuantity, version) = currentStock.Value;
-                    if (fullQuantity != flexQuantity)
+                    sourceItems = new List<MeliItem>();
+                    foreach (var comp in components)
                     {
-                        bool retrySuccess = await _meliClient.UpdateUserProductStockAsync(userProductId, flexQuantity, version);
-                        if (retrySuccess)
+                        string itemId = comp.SourceItemId;
+                        if (!itemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
                         {
-                            _logger.LogInformation($"Retry successful for {userProductId}.");
+                            var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = comp.SourceItemId });
+                            var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
+                            if (!string.IsNullOrWhiteSpace(resolvedId)) itemId = resolvedId;
+                        }
+                        if (!string.IsNullOrWhiteSpace(itemId))
+                        {
+                            var items = await _meliClient.GetItemsAsync(new[] { itemId });
+                            if (items != null && items.Count > 0) sourceItems.AddRange(items);
+                        }
+                    }
+                    if (sourceItems.Count == 0)
+                    {
+                        _logger.LogWarning("Could not fetch source items for Target {TargetItemId}. Skipping.", targetItemId);
+                        return;
+                    }
+                }
+
+                // Overwrite quantities with Znube (FULL→SKU, PACK/COMBO→ProductId in worker). Spec 03.
+                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, rule.RuleType, fromWorker: true, ct);
+
+                // Fetch target item
+                string finalTargetItemId = targetItemId;
+                if (!finalTargetItemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
+                {
+                    var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = finalTargetItemId });
+                    var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
+                    if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
+                }
+                var targetItems = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });
+                var targetItem = targetItems?.FirstOrDefault();
+                if (targetItem == null)
+                {
+                    _logger.LogWarning("Could not fetch Target Item {TargetItemId}. Skipping.", targetItemId);
+                    return;
+                }
+                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem, ct))
+                {
+                    _logger.LogInformation("Skipping FULL-only item {TargetItemId} (no selling_address).", targetItemId);
+                    return;
+                }
+
+                List<VariantStockUpdate> updates;
+                try
+                {
+                    var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
+                    updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error calculating stock for target {TargetItemId}", rule.TargetItemId);
+                    if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
+                    {
+                        await LogPackErrorAsync(ex, finalTargetItemId, null, null, null, null, "calculate", ct);
+                    }
+                    return;
+                }
+                foreach (var update in updates)
+                {
+                    var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
+                    if (currentStock != null && currentStock.Value.Quantity != update.NewQuantity)
+                    {
+                        if (dryRun)
+                        {
+                            _logger.LogInformation(
+                                "DRY_RUN: would update Target Variant {TargetVariantId}: {OldQty} -> {NewQty}",
+                                update.TargetVariantId,
+                                currentStock.Value.Quantity,
+                                update.NewQuantity);
+
+                            await LogStockUpdateInfoAsync(
+                                finalTargetItemId,
+                                update.TargetVariantId,
+                                ResolveTargetSku(targetItem, update.TargetVariantId),
+                                currentStock.Value.Quantity,
+                                update.NewQuantity,
+                                ct);
                         }
                         else
                         {
-                            _logger.LogError($"Retry failed for {userProductId}.");
+                            try
+                            {
+                                var success = await _meliClient.UpdateUserProductStockAsync(update.TargetVariantId, update.NewQuantity, currentStock.Value.Version, ct);
+                                if (!success)
+                                {
+                                    _logger.LogWarning("Conflict updating Target Variant {TargetVariantId}.", update.TargetVariantId);
+                                    if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        await LogPackErrorAsync(
+                                            null,
+                                            finalTargetItemId,
+                                            update.TargetVariantId,
+                                            ResolveTargetSku(targetItem, update.TargetVariantId),
+                                            currentStock.Value.Quantity,
+                                            update.NewQuantity,
+                                            "update_conflict",
+                                            ct);
+                                    }
+                                    continue;
+                                }
+
+                                _logger.LogInformation("Updating Target Variant {TargetVariantId}: {OldQty} -> {NewQty}", update.TargetVariantId, currentStock.Value.Quantity, update.NewQuantity);
+                                if (isFullRule || string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await LogStockUpdateInfoAsync(
+                                        finalTargetItemId,
+                                        update.TargetVariantId,
+                                        ResolveTargetSku(targetItem, update.TargetVariantId),
+                                        currentStock.Value.Quantity,
+                                        update.NewQuantity,
+                                        ct);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "Error updating Target Variant {TargetVariantId}", update.TargetVariantId);
+                                if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await LogPackErrorAsync(
+                                        ex,
+                                        finalTargetItemId,
+                                        update.TargetVariantId,
+                                        ResolveTargetSku(targetItem, update.TargetVariantId),
+                                        currentStock.Value.Quantity,
+                                        update.NewQuantity,
+                                        "update_exception",
+                                        ct);
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
-        catch (Exception ex)
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing rule for target {TargetItemId}", rule.TargetItemId);
+            }
+        });
+
+        _logger.LogInformation("Stock Sync finished at: {Time}", DateTime.Now);
+    }
+
+    private async Task LogStockUpdateInfoAsync(string targetItemId, string targetVariantId, string? sku, int oldQty, int newQty, CancellationToken ct)
+    {
+        var details = JsonSerializer.Serialize(new
         {
-            _logger.LogError(ex, $"Error syncing {mapping.Full?.UserProductId}");
-        }
+            targetItemId,
+            targetVariantId,
+            sku,
+            oldQty,
+            newQty
+        });
+
+        await _dashboardLogService.AppendLogAsync(
+            severity: "Info",
+            category: "StockSyncWebhook",
+            message: $"Stock actualizado para publicación {targetItemId}, SKU {sku}.",
+            detailsJson: details,
+            entityIds: new[] { targetItemId, targetVariantId },
+            cancellationToken: ct);
     }
 
-    // Models matching JSON structure
-    public class StockMappingEntry
+    private async Task LogPackErrorAsync(Exception? ex, string targetItemId, string? targetVariantId, string? sku, int? oldQty, int? newQty, string stage, CancellationToken ct)
     {
-        public StockNode? Full { get; set; }
-        public StockNode? Flex { get; set; }
-        public string Sku { get; set; } = string.Empty;
+        var details = JsonSerializer.Serialize(new
+        {
+            targetItemId,
+            targetVariantId,
+            sku,
+            oldQty,
+            newQty,
+            stage,
+            exception = ex?.ToString()
+        });
+
+        await _dashboardLogService.AppendLogAsync(
+            severity: "Error",
+            category: "StockSyncWebhook",
+            message: $"Error actualizando stock de PACK para publicación {targetItemId}, SKU {sku}.",
+            detailsJson: details,
+            entityIds: targetVariantId != null ? new[] { targetItemId, targetVariantId } : new[] { targetItemId },
+            cancellationToken: ct);
     }
 
-    public class StockNode
+    private static string? ResolveTargetSku(MeliItem targetItem, string targetVariantId)
     {
-        public string ItemId { get; set; } = string.Empty;
-        public string UserProductId { get; set; } = string.Empty;
-        public string? VariationId { get; set; }
-        public string Logistic { get; set; } = string.Empty;
+        var variation = targetItem.Variations?.FirstOrDefault(v =>
+            string.Equals(v.UserProductId, targetVariantId, StringComparison.OrdinalIgnoreCase));
+        return StockLocationHelpers.ExtractSku(targetItem, variation);
     }
 }

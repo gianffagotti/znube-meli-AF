@@ -13,7 +13,7 @@ public static class FullRuleSourceItemsHelper
             .Where(m => filterSku is null || m.TargetSku.Equals(filterSku, StringComparison.OrdinalIgnoreCase))
             .Select(m => new MeliVariation
             {
-                Attributes = [new() { Id = MeliConstants.SellerSkuAttributeId, ValueName = m.TargetSku }],
+                Attributes = [new() { Id = MeliConstants.SellerSkuAttributeId, ValueName = StockRuleService.NormalizeSku(m.TargetSku) }],
                 AvailableQuantity = 0
             }).ToList();
         return

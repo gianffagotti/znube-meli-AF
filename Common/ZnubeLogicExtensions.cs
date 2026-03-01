@@ -1,5 +1,6 @@
-using System.Text.RegularExpressions;
 using meli_znube_integration.Models;
+using meli_znube_integration.Services;
+using System.Text.RegularExpressions;
 
 namespace meli_znube_integration.Common;
 
@@ -29,7 +30,7 @@ public static class ZnubeLogicExtensions
     public static string NormalizeSellerSku(string? sellerSku)
     {
         if (string.IsNullOrWhiteSpace(sellerSku)) return sellerSku ?? string.Empty;
-        var s = sellerSku.Trim();
+        var s = StockRuleService.NormalizeSku(sellerSku.Trim());
         if (s.Contains("#")) return s;
 
         if (s.Contains("!"))
