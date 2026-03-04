@@ -106,3 +106,24 @@ public class MeliStockLocation
     [JsonPropertyName("quantity")]
     public int Quantity { get; set; }
 }
+
+public class MeliOrder
+{
+    public List<MeliOrderItem> Items { get; set; } = [];
+    public string? ShippingId { get; set; }
+    public string? Id { get; set; }
+    public string? PackId { get; set; }
+    public DateTimeOffset? DateCreatedUtc { get; set; }
+    public string? BuyerNickname { get; set; }
+    public string? BuyerFirstName { get; set; }
+}
+
+public class MeliOrderItem
+{
+    public string Title { get; set; } = string.Empty;
+    public string? SellerSku { get; set; }
+    public string? ItemId { get; set; }
+    public string? TargetSku { get; set; }
+    public int Quantity { get; set; } = 1;
+    public string? UserProductId { get; set; }
+}

@@ -1,11 +1,11 @@
-using System.Diagnostics;
-using System.Net;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+using System.Net;
 
 namespace meli_znube_integration.Functions;
 
@@ -75,8 +75,6 @@ public class StockRulesApi
             return response;
         }
     }
-
-    private static readonly IReadOnlySet<string> ValidRuleTypes = StockRuleTypes.ValidRuleTypes;
 
     [Function("UpsertStockRule")]
     public async Task<HttpResponseData> UpsertRule(
