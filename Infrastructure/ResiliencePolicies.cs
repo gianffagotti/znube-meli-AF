@@ -1,6 +1,7 @@
 using Polly;
-using Polly.Extensions.Http;
 using Polly.Contrib.WaitAndRetry;
+using Polly.Extensions.Http;
+using System.Net;
 
 namespace meli_znube_integration.Infrastructure;
 
@@ -34,7 +35,8 @@ public static class ResiliencePolicies
 
         return HttpPolicyExtensions
             .HandleTransientHttpError() // 5xx, 408
-            .OrResult(msg => msg.StatusCode == System.Net.HttpStatusCode.TooManyRequests) // 429
+            .OrResult(msg => msg.StatusCode == HttpStatusCode.TooManyRequests) // 429
+            .OrResult(msg => msg.StatusCode == HttpStatusCode.Conflict) // 409
             .WaitAndRetryAsync(delay);
     }
 
