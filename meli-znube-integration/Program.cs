@@ -3,6 +3,7 @@ using meli_znube_integration.Common;
 using meli_znube_integration.Core.Ports;
 using meli_znube_integration.Infrastructure;
 using meli_znube_integration.Infrastructure.Adapters.MercadoLibre;
+using meli_znube_integration.Infrastructure.Adapters.Znube;
 using meli_znube_integration.Services;
 using meli_znube_integration.Services.Calculators;
 using Microsoft.Extensions.DependencyInjection;
@@ -40,6 +41,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddScoped<IMeliApiClient, MeliApiClient>();
         services.AddScoped<IMarketplacePort, MeliMarketplaceAdapter>();
         services.AddScoped<IZnubeApiClient, ZnubeApiClient>();
+        services.AddScoped<IInventoryPort, ZnubeInventoryAdapter>();
         services.AddScoped<IZnubeAllocationService, ZnubeAllocationService>();
         services.AddScoped<IOrderItemRuleResolver, OrderItemRuleResolver>();
         services.AddScoped<IOrderItemExpander, OrderItemExpander>();
