@@ -1,52 +1,63 @@
 using meli_znube_integration.Common;
-using meli_znube_integration.Models;
-using Microsoft.Extensions.Logging;
+using meli_znube_integration.Core.Domain.Orders;
 
-namespace meli_znube_integration.Services;
+namespace meli_znube_integration.Core.Application.Orders;
 
 /// <summary>
-/// Pure note content builder. Prefix [A], budget 296. Strict truncation: TOC → Zona → Comprimir → Truncar. Spec 02.
+/// Pure formatter: builds Mercado Libre note text from allocation rows (legacy <c>NoteContentBuilder</c> behavior).
 /// </summary>
-public class NoteContentBuilder : INoteContentBuilder
+public sealed class NoteFormatter : INoteFormatter
 {
     private const int MaxNoteLength = 300;
-    /// <summary>Prefix [A] + space = 4 chars. Spec 02. Usable body budget = 296.</summary>
     private const string NotePrefix = $"{NoteUtils.AutoTag} ";
-    private readonly int UsableBudget = MaxNoteLength - NotePrefix.Length;
-    /// <summary>Spec 02: asignaciones separadas por " / ", resto con espacios (una sola línea para ML).</summary>
+    private readonly int _usableBudget = MaxNoteLength - NotePrefix.Length;
     private const string AssignmentSeparator = " / ";
-    /// <summary>TOC (otros en 24hs). Usado al agregar y al eliminar en el pipeline.</summary>
     private const string TocLine = "(TOC)";
     private const string PackTag = "(P)";
     private const string ComboTag = "(C)";
     private const int MaxDetailedProducts = 9;
 
-    private readonly ILogger<NoteContentBuilder>? _logger;
-
-    public NoteContentBuilder(ILogger<NoteContentBuilder>? logger = null)
+    /// <summary>Formats the final note with prefix <c>[A] </c> or <c>null</c> when there is nothing to publish.</summary>
+    public string? Format(
+        IReadOnlyList<AllocationResult>? allocations,
+        string? destinationZone,
+        bool addToc,
+        bool hasPack,
+        bool hasCombo)
     {
-        _logger = logger;
+        if (allocations == null || allocations.Count == 0)
+            return null;
+
+        var body = BuildBody(allocations, destinationZone, addToc, hasPack, hasCombo);
+        if (string.IsNullOrWhiteSpace(body))
+            return null;
+
+        return BuildFinalNote(body);
     }
 
-    public string BuildBody(NoteBodyInput input)
+    private string BuildBody(
+        IReadOnlyList<AllocationResult> allocations,
+        string? destinationZone,
+        bool addToc,
+        bool hasPack,
+        bool hasCombo)
     {
-        if (input?.Allocations == null || input.Allocations.Count == 0)
+        var lines = BuildGroupedLines(allocations);
+        if (lines.Count == 0)
             return string.Empty;
 
-        var lines = BuildGroupedLines(input.Allocations);
-        if (!string.IsNullOrWhiteSpace(input.Zone))
-            lines.Add($"({input.Zone.Trim()})");
-        if (input.AddToc)
+        if (!string.IsNullOrWhiteSpace(destinationZone))
+            lines.Add($"({destinationZone.Trim()})");
+        if (addToc)
             lines.Add(TocLine);
 
         var body = string.Join("\n", lines);
-        var packComboSuffix = BuildPackComboSuffix(input.HasPack, input.HasCombo);
+        var packComboSuffix = BuildPackComboSuffix(hasPack, hasCombo);
         if (!string.IsNullOrEmpty(packComboSuffix))
-            body = body + packComboSuffix;
+            body += packComboSuffix;
         return body;
     }
 
-    /// <summary>Spec 02: sufijos PACK/COMBO → " (P)", " (C)" o " (P) (C)".</summary>
     private static string BuildPackComboSuffix(bool hasPack, bool hasCombo)
     {
         var parts = new List<string>();
@@ -55,25 +66,23 @@ public class NoteContentBuilder : INoteContentBuilder
         return parts.Count == 0 ? string.Empty : " " + string.Join(" ", parts);
     }
 
-    public string BuildFinalNote(string? body)
+    private string? BuildFinalNote(string body)
     {
-        var text = Compact(body ?? string.Empty);
+        var text = Compact(body);
         if (string.IsNullOrEmpty(text))
-            return NotePrefix.TrimEnd();
+            return null;
 
-        // Spec 02: pipeline sobre líneas (1) TOC, (2) Zona, (3) Comprimir; luego smart truncate a 296
         var (assignmentLines, trailerLines) = ParseLines(text);
         var bodyDisplay = BuildDisplayBody(assignmentLines, trailerLines);
         bodyDisplay = ApplyStrictTruncationPipeline(assignmentLines, trailerLines, bodyDisplay);
 
-        var truncated = SmartTruncate(bodyDisplay, UsableBudget);
+        var truncated = SmartTruncate(bodyDisplay, _usableBudget);
         var result = NotePrefix + truncated;
         if (result.Length > MaxNoteLength)
             result = NotePrefix + SmartTruncate(truncated, MaxNoteLength - NotePrefix.Length);
-        return result.Length > MaxNoteLength ? result.Substring(0, MaxNoteLength) : result;
+        return result.Length > MaxNoteLength ? result[..MaxNoteLength] : result;
     }
 
-    /// <summary>Separa líneas en asignaciones (no empiezan con '(') y trailer (zona, TOC, P/C).</summary>
     private static (List<string> assignmentLines, List<string> trailerLines) ParseLines(string text)
     {
         var lines = text.Split('\n').Select(l => (l ?? string.Empty).Trim()).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
@@ -81,7 +90,7 @@ public class NoteContentBuilder : INoteContentBuilder
         var trailerLines = new List<string>();
         foreach (var line in lines)
         {
-            if (line.StartsWith("(", StringComparison.Ordinal))
+            if (line.StartsWith('('))
                 trailerLines.Add(line);
             else
                 assignmentLines.Add(line);
@@ -89,26 +98,23 @@ public class NoteContentBuilder : INoteContentBuilder
         return (assignmentLines, trailerLines);
     }
 
-    /// <summary>Spec 02: una sola línea para ML — asignaciones con " / ", resto con espacio.</summary>
     private static string BuildDisplayBody(List<string> assignmentLines, List<string> trailerLines)
     {
         var body = string.Join(AssignmentSeparator, assignmentLines);
         if (trailerLines.Count > 0)
-            body = body + " " + string.Join(" ", trailerLines);
+            body += " " + string.Join(" ", trailerLines);
         return body;
     }
 
-    /// <summary>Spec 02: (1) quitar TOC, (2) quitar zona, (3) quitar asignaciones desde el final hasta ≤ 296.</summary>
     private string ApplyStrictTruncationPipeline(List<string> assignmentLines, List<string> trailerLines, string currentDisplay)
     {
-        if (currentDisplay.Length <= UsableBudget) return currentDisplay;
+        if (currentDisplay.Length <= _usableBudget) return currentDisplay;
 
-        // (1) Eliminar tag TOC (quitar solo el token, no la línea si tiene también (P)/(C))
-        for (int i = 0; i < trailerLines.Count; i++)
+        for (var i = 0; i < trailerLines.Count; i++)
         {
             var line = trailerLines[i];
             if (!line.Contains(TocLine, StringComparison.Ordinal)) continue;
-            var removed = line.Replace(TocLine, "").Trim();
+            var removed = line.Replace(TocLine, "", StringComparison.Ordinal).Trim();
             while (removed.Contains("  ", StringComparison.Ordinal))
                 removed = removed.Replace("  ", " ", StringComparison.Ordinal);
             if (string.IsNullOrEmpty(removed))
@@ -116,28 +122,25 @@ public class NoteContentBuilder : INoteContentBuilder
             else
                 trailerLines[i] = removed;
             currentDisplay = BuildDisplayBody(assignmentLines, trailerLines);
-            if (currentDisplay.Length <= UsableBudget) return currentDisplay;
+            if (currentDisplay.Length <= _usableBudget) return currentDisplay;
             break;
         }
 
-        // (2) Eliminar zona — línea que es un solo token (xxx), no (P)/(C)/(TOC); no tocar "(Villa Martelli) (P)"
         var zoneIdx = trailerLines.FindIndex(l =>
         {
-            if (!l.StartsWith("(", StringComparison.Ordinal) || !l.EndsWith(")", StringComparison.Ordinal) || l.Length <= 2) return false;
-            if (l.Equals(PackTag, StringComparison.Ordinal) || l.Equals(ComboTag, StringComparison.Ordinal) || l.Equals(TocLine, StringComparison.Ordinal)) return false;
-            var firstClose = l.IndexOf(')');
-            if (firstClose < 0 || firstClose != l.Length - 1) return false;
-            return true;
+            if (!l.StartsWith('(') || !l.EndsWith(')') || l.Length <= 2) return false;
+            if (string.Equals(l, PackTag, StringComparison.Ordinal) || string.Equals(l, ComboTag, StringComparison.Ordinal) || string.Equals(l, TocLine, StringComparison.Ordinal)) return false;
+            var firstClose = l.IndexOf(')', StringComparison.Ordinal);
+            return firstClose >= 0 && firstClose == l.Length - 1;
         });
         if (zoneIdx >= 0)
         {
             trailerLines.RemoveAt(zoneIdx);
             currentDisplay = BuildDisplayBody(assignmentLines, trailerLines);
-            if (currentDisplay.Length <= UsableBudget) return currentDisplay;
+            if (currentDisplay.Length <= _usableBudget) return currentDisplay;
         }
 
-        // (3) Comprimir asignaciones — quitar líneas desde el final
-        while (assignmentLines.Count > 1 && currentDisplay.Length > UsableBudget)
+        while (assignmentLines.Count > 1 && currentDisplay.Length > _usableBudget)
         {
             assignmentLines.RemoveAt(assignmentLines.Count - 1);
             currentDisplay = BuildDisplayBody(assignmentLines, trailerLines);
@@ -150,14 +153,13 @@ public class NoteContentBuilder : INoteContentBuilder
     {
         if (string.IsNullOrEmpty(text) || max <= 0) return string.Empty;
         if (text.Length <= max) return text;
-        var cut = text.Substring(0, max);
+        var cut = text[..max];
         var lastSpace = cut.LastIndexOf(' ');
         if (lastSpace > max / 2)
-            return cut.Substring(0, lastSpace);
+            return cut[..lastSpace];
         return cut;
     }
 
-    /// <summary>Spec 02: compactar cuerpo (trim por línea, quitar vacías).</summary>
     private static string Compact(string text)
     {
         if (string.IsNullOrEmpty(text)) return string.Empty;
@@ -165,11 +167,9 @@ public class NoteContentBuilder : INoteContentBuilder
         return string.Join("\n", lines);
     }
 
-    private static List<string> BuildGroupedLines(IEnumerable<ZnubeAllocationEntry> allocations)
+    private static List<string> BuildGroupedLines(IEnumerable<AllocationResult> allocations)
     {
         var result = new List<string>();
-        if (allocations == null) return result;
-
         var normalAllocations = allocations.Where(a => a != null).ToList();
         if (normalAllocations.Count == 0)
             return result;
@@ -179,10 +179,9 @@ public class NoteContentBuilder : INoteContentBuilder
 
         foreach (var a in normalAllocations)
         {
-            if (a == null) continue;
-            var assignment = a.AssignmentName ?? string.Empty;
-            var product = a.ProductLabel ?? string.Empty;
-            var qty = a.Quantity;
+            var assignment = a.ResourceName ?? string.Empty;
+            var product = a.Label ?? string.Empty;
+            var qty = a.AllocatedQuantity;
             if (!byAssignment.TryGetValue(assignment, out var group))
             {
                 group = new AssignmentGroup();
@@ -216,10 +215,11 @@ public class NoteContentBuilder : INoteContentBuilder
 
         var indexedAssignments = assignmentOrder
             .Select((name, index) => new { Name = name, Index = index, Count = byAssignment.TryGetValue(name, out var g) ? g.ProductOrder.Count : 0 })
-            .OrderBy(a => a.Count).ThenBy(a => a.Index)
+            .OrderBy(a => a.Count)
+            .ThenBy(a => a.Index)
             .ToList();
 
-        for (int i = 0; i < indexedAssignments.Count; i++)
+        for (var i = 0; i < indexedAssignments.Count; i++)
         {
             var entry = indexedAssignments[i];
             if (!byAssignment.TryGetValue(entry.Name, out var group)) continue;
@@ -244,13 +244,13 @@ public class NoteContentBuilder : INoteContentBuilder
         var normalized = NoteUtils.RemoveDiacritics(trimmed).ToLowerInvariant();
         if (normalized == "sin asignacion") return "SA";
         if (normalized == "sin stock") return "SS";
-        return trimmed.Length <= 3 ? trimmed : trimmed.Substring(0, 3);
+        return trimmed.Length <= 3 ? trimmed : trimmed[..3];
     }
 
     private sealed class AssignmentGroup
     {
-        public List<string> ProductOrder { get; } = new List<string>();
-        public Dictionary<string, int> ProductToQty { get; } = new Dictionary<string, int>(StringComparer.Ordinal);
+        public List<string> ProductOrder { get; } = new();
+        public Dictionary<string, int> ProductToQty { get; } = new(StringComparer.Ordinal);
 
         public void Add(string product, int qty)
         {

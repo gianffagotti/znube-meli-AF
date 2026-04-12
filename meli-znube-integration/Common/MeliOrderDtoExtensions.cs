@@ -6,7 +6,7 @@ namespace meli_znube_integration.Common;
 public static class MeliOrderDtoExtensions
 {
     /// <summary>
-    /// Maps API DTO to domain MeliOrder for use with ZnubeAllocationService and note builders.
+    /// Maps API DTO to domain MeliOrder for orchestrators (e.g. <see cref="Services.PackProcessor"/>).
     /// </summary>
     public static MeliOrder ToOrder(this MeliOrderDto? dto)
     {

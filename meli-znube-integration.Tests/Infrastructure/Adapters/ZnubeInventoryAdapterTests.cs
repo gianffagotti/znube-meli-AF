@@ -1,5 +1,6 @@
 using FluentAssertions;
 using meli_znube_integration.Clients;
+using meli_znube_integration.Common;
 using meli_znube_integration.Infrastructure.Adapters.Znube;
 using meli_znube_integration.Models;
 using Moq;
@@ -43,7 +44,8 @@ public class ZnubeInventoryAdapterTests
             }
         };
 
-        _znube.Setup(c => c.GetStockBySkuAsync(sku, It.IsAny<CancellationToken>()))
+        var normalized = ZnubeLogicExtensions.NormalizeSellerSku(sku);
+        _znube.Setup(c => c.GetStockBySkuAsync(normalized, It.IsAny<CancellationToken>()))
             .ReturnsAsync(response);
 
         var qty = await CreateSut().GetAvailableStockAsync(sku);
