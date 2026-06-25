@@ -42,6 +42,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<TokensStoreBlob>();
         services.AddSingleton<MeliAuth>();
         services.AddScoped<IMeliApiClient, MeliApiClient>();
+        services.AddScoped<IMeliUiItemNormalizer, MeliFamilyItemResolver>();
         services.AddScoped<IMarketplacePort, MeliMarketplaceAdapter>();
         services.AddScoped<MeliOrderAdapter>();
         services.AddScoped<IOrderPort>(sp => sp.GetRequiredService<MeliOrderAdapter>());

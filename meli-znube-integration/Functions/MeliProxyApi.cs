@@ -5,6 +5,7 @@ using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Models.Dtos;
+using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
@@ -14,11 +15,13 @@ namespace meli_znube_integration.Functions;
 public class MeliProxyApi
 {
     private readonly IMeliApiClient _meliClient;
+    private readonly IMeliUiItemNormalizer _itemNormalizer;
     private readonly ILogger<MeliProxyApi> _logger;
 
-    public MeliProxyApi(IMeliApiClient meliClient, ILogger<MeliProxyApi> logger)
+    public MeliProxyApi(IMeliApiClient meliClient, IMeliUiItemNormalizer itemNormalizer, ILogger<MeliProxyApi> logger)
     {
         _meliClient = meliClient;
+        _itemNormalizer = itemNormalizer;
         _logger = logger;
     }
 
@@ -40,13 +43,32 @@ public class MeliProxyApi
             var sellerId = long.Parse(sellerIdStr);
             var cleanQuery = query.Trim();
 
-            // Service-layer logic: if MLA item ID, return it
+            // Family-id branch: pure numeric string of 10+ digits → search by family directly.
+            if (Regex.IsMatch(cleanQuery, @"^\d{10,}$"))
+            {
+                var shell = await _itemNormalizer.SearchByFamilyIdAsync(cleanQuery);
+                var response = req.CreateResponse(HttpStatusCode.OK);
+                await response.WriteAsJsonAsync(shell != null
+                    ? new List<MeliProxyItemDto> { MapToDto(shell) }
+                    : new List<MeliProxyItemDto>());
+                return response;
+            }
+
+            // MLA-id branch: direct item lookup.
             if (Regex.IsMatch(cleanQuery, @"^MLA\d+$", RegexOptions.IgnoreCase))
             {
                 var single = await _meliClient.GetItemsAsync([cleanQuery.ToUpperInvariant()]);
                 var dto = single?.FirstOrDefault();
                 var response = req.CreateResponse(HttpStatusCode.OK);
-                await response.WriteAsJsonAsync(dto != null ? new List<MeliProxyItemDto> { MapToDto(dto) } : new List<MeliProxyItemDto>());
+                if (dto != null && dto.IsEligibleForUi())
+                {
+                    var normalized = await _itemNormalizer.NormalizeAsync(dto);
+                    await response.WriteAsJsonAsync(new List<MeliProxyItemDto> { MapToDto(normalized) });
+                }
+                else
+                {
+                    await response.WriteAsJsonAsync(new List<MeliProxyItemDto>());
+                }
                 return response;
             }
 
@@ -66,7 +88,16 @@ public class MeliProxyApi
             }
 
             var items = await _meliClient.GetItemsAsync(ids);
-            var dtos = items.Select(MapToDto).ToList();
+
+            // Unbreakable filter: only active FULL+FLEX items reach the UI.
+            var eligible = items.Where(i => i.IsEligibleForUi());
+
+            var dtos = new List<MeliProxyItemDto>();
+            foreach (var item in eligible)
+            {
+                var normalized = await _itemNormalizer.NormalizeAsync(item);
+                dtos.Add(MapToDto(normalized));
+            }
 
             var response2 = req.CreateResponse(HttpStatusCode.OK);
             await response2.WriteAsJsonAsync(dtos);
@@ -101,8 +132,9 @@ public class MeliProxyApi
                 return req.CreateResponse(HttpStatusCode.NotFound);
             }
 
+            var normalized = await _itemNormalizer.NormalizeAsync(item);
             var response = req.CreateResponse(HttpStatusCode.OK);
-            await response.WriteAsJsonAsync(MapToDto(item));
+            await response.WriteAsJsonAsync(MapToDto(normalized));
             return response;
         }
         catch (Exception ex)

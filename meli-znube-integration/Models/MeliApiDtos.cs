@@ -236,6 +236,33 @@ public class MeliUserProductStockLocationDto
 // --- Item (multiget) - reuse existing MeliItem from Models for full item body ---
 // GetItemsAsync returns List<MeliItem> from Models.MeliItem (existing type)
 
+// --- User Products Family DTOs (new ML catalog model) ---
+/// <summary>Maps GET /sites/MLA/user-products-families/{family_id}. Exposes the sibling MLAU ids.</summary>
+public class MeliUserProductsFamilyDto
+{
+    [JsonPropertyName("id")]
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
+    public string? Id { get; set; }
+
+    /// <summary>Sibling User Product ids (MLAU…). Never null.</summary>
+    [JsonPropertyName("user_products_ids")]
+    public List<string> UserProductsIds { get; set; } = new();
+}
+
+/// <summary>Maps an entry of GET /user_products?ids=… used to resolve a MLAU to technical detail (SKU).</summary>
+public class MeliUserProductDto
+{
+    [JsonPropertyName("id")]
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
+    public string? Id { get; set; }
+
+    [JsonPropertyName("seller_sku")]
+    public string? SellerSku { get; set; }
+
+    [JsonPropertyName("attributes")]
+    public List<meli_znube_integration.Models.MeliAttribute> Attributes { get; set; } = new();
+}
+
 // --- Search query helper ---
 public class MeliItemSearchQuery
 {

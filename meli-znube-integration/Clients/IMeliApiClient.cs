@@ -20,4 +20,10 @@ public interface IMeliApiClient
     Task<MeliUserProductStockResponseDto?> GetUserProductStockResponseAsync(string userProductId, CancellationToken cancellationToken = default);
     Task<bool> UpdateUserProductStockAsync(string userProductId, int quantity, string version, CancellationToken cancellationToken = default);
     Task<MeliSearchResponseDto?> SearchItemsAsync(long sellerId, MeliItemSearchQuery query, CancellationToken cancellationToken = default);
+
+    /// <summary>Fetches a User Products Family (new catalog model) by id. Returns null on blank id or non-success.</summary>
+    Task<MeliUserProductsFamilyDto?> GetUserProductsFamilyAsync(string familyId, CancellationToken cancellationToken = default);
+
+    /// <summary>Resolves a set of MLAU ids to technical detail (SKU) via GET /user_products?ids=…. Returns empty on failure.</summary>
+    Task<List<MeliUserProductDto>> ResolveUserProductsAsync(IEnumerable<string> userProductIds, CancellationToken cancellationToken = default);
 }

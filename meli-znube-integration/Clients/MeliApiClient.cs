@@ -143,7 +143,7 @@ public class MeliApiClient : IMeliApiClient
         if (idList.Count == 0) return new List<MeliItem>();
         var client = GetClient();
         var idsParam = string.Join(",", idList);
-        var url = $"items?ids={idsParam}&include_attributes=all&attributes=id,shipping,variations,seller_custom_field,attributes,title,price,thumbnail,permalink";
+        var url = $"items?ids={idsParam}&include_attributes=all&attributes=id,status,shipping,variations,seller_custom_field,attributes,title,price,thumbnail,permalink,family_id,family_name";
         using var res = await client.GetAsync(url, cancellationToken);
         if (!res.IsSuccessStatusCode) return new List<MeliItem>();
         var json = await res.Content.ReadAsStringAsync(cancellationToken);
@@ -213,5 +213,50 @@ public class MeliApiClient : IMeliApiClient
         if (!res.IsSuccessStatusCode) return null;
         var json = await res.Content.ReadAsStringAsync(cancellationToken);
         return JsonSerializer.Deserialize<MeliSearchResponseDto>(json, JsonOptions);
+    }
+
+    public async Task<MeliUserProductsFamilyDto?> GetUserProductsFamilyAsync(string familyId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(familyId)) return null;
+        var client = GetClient();
+        using var res = await client.GetAsync($"sites/MLA/user-products-families/{Uri.EscapeDataString(familyId)}", cancellationToken);
+        if (!res.IsSuccessStatusCode) return null;
+        var json = await res.Content.ReadAsStringAsync(cancellationToken);
+        return JsonSerializer.Deserialize<MeliUserProductsFamilyDto>(json, JsonOptions);
+    }
+
+    public async Task<List<MeliUserProductDto>> ResolveUserProductsAsync(IEnumerable<string> userProductIds, CancellationToken cancellationToken = default)
+    {
+        var idList = userProductIds?.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().ToList() ?? new List<string>();
+        if (idList.Count == 0) return new List<MeliUserProductDto>();
+        var client = GetClient();
+        var idsParam = string.Join(",", idList.Select(Uri.EscapeDataString));
+        using var res = await client.GetAsync($"user_products?ids={idsParam}", cancellationToken);
+        if (!res.IsSuccessStatusCode) return new List<MeliUserProductDto>();
+        var json = await res.Content.ReadAsStringAsync(cancellationToken);
+        var result = new List<MeliUserProductDto>();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        // Multiget may return a plain array of products or the [{ code, body }] envelope.
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in root.EnumerateArray())
+            {
+                var target = entry;
+                if (entry.ValueKind == JsonValueKind.Object && entry.TryGetProperty("body", out var body) && body.ValueKind == JsonValueKind.Object)
+                {
+                    if (body.TryGetProperty("error", out _)) continue;
+                    target = body;
+                }
+                var dto = JsonSerializer.Deserialize<MeliUserProductDto>(target.GetRawText(), JsonOptions);
+                if (dto != null) result.Add(dto);
+            }
+        }
+        else if (root.ValueKind == JsonValueKind.Object)
+        {
+            var dto = JsonSerializer.Deserialize<MeliUserProductDto>(root.GetRawText(), JsonOptions);
+            if (dto != null) result.Add(dto);
+        }
+        return result;
     }
 }

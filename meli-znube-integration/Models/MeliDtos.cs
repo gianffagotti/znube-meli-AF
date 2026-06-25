@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using meli_znube_integration.Models.Dtos;
 
 namespace meli_znube_integration.Models;
 
@@ -9,6 +10,19 @@ public class MeliItem
 
     [JsonPropertyName("user_product_id")]
     public string UserProductId { get; set; } = string.Empty;
+
+    /// <summary>New ML catalog model: present when the item belongs to a User Products Family (siblings live in the family, not in variations).</summary>
+    [JsonPropertyName("family_id")]
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
+    public string? FamilyId { get; set; }
+
+    /// <summary>Human-readable name of the User Products Family this item belongs to (e.g. "Remera Lacoste"). Replaces Title in the proxy DTO when present.</summary>
+    [JsonPropertyName("family_name")]
+    public string? FamilyName { get; set; }
+
+    /// <summary>Lifecycle status returned by multiget (e.g. "active", "paused", "closed"). Null when not projected.</summary>
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
 
     [JsonPropertyName("seller_custom_field")]
     public string? SellerCustomField { get; set; }
