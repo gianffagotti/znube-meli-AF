@@ -1,6 +1,7 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Canonical;
 using meli_znube_integration.Models.Dtos;
 using Microsoft.Extensions.Logging;
 
@@ -11,17 +12,23 @@ public class OrderItemExpander : IOrderItemExpander
     private readonly IZnubeApiClient _znubeApiClient;
     private readonly IMeliApiClient _meliApiClient;
     private readonly IOrderItemRuleResolver _ruleResolver;
+    private readonly IMeliItemNormalizer _meliItemNormalizer;
+    private readonly IMeliCatalogHydrator _catalogHydrator;
     private readonly ILogger<OrderItemExpander> _logger;
 
     public OrderItemExpander(
         IZnubeApiClient znubeApiClient,
         IMeliApiClient meliApiClient,
         IOrderItemRuleResolver ruleResolver,
+        IMeliItemNormalizer meliItemNormalizer,
+        IMeliCatalogHydrator catalogHydrator,
         ILogger<OrderItemExpander> logger)
     {
         _znubeApiClient = znubeApiClient;
         _meliApiClient = meliApiClient;
         _ruleResolver = ruleResolver;
+        _meliItemNormalizer = meliItemNormalizer;
+        _catalogHydrator = catalogHydrator;
         _logger = logger;
     }
 
@@ -223,8 +230,10 @@ public class OrderItemExpander : IOrderItemExpander
         if (sourceItem == null)
             return null;
 
-        var seedSku = sourceItem.Variations.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v.SellerSku))?.SellerSku
-                      ?? sourceItem.SellerSku;
+        sourceItem = await _catalogHydrator.HydrateAsync(sourceItem, sellerId!, cancellationToken);
+        var canonicalSource = _meliItemNormalizer.Normalize(sourceItem);
+        var seedSku = canonicalSource.Variations.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v.SellerSku))?.SellerSku
+                      ?? canonicalSource.SellerSku;
         if (string.IsNullOrWhiteSpace(seedSku))
             return null;
 
@@ -407,17 +416,18 @@ public class OrderItemExpander : IOrderItemExpander
         {
             var item = items.FirstOrDefault(i => string.Equals(i.Id, resolvedId, StringComparison.OrdinalIgnoreCase));
             if (item == null) return null;
-            var variations = item.Variations ?? new List<MeliVariation>();
-            if (variations.Count != 1) return null;
+            item = await _catalogHydrator.HydrateAsync(item, sellerId!, cancellationToken);
+            var canonicalItem = _meliItemNormalizer.Normalize(item);
+            if (canonicalItem.Variations.Count != 1) return null;
 
-            var singleVar = variations[0];
+            var singleVar = canonicalItem.Variations[0];
             if (string.IsNullOrWhiteSpace(singleVar.SellerSku)) return null;
 
             var component = componentByResolvedId[resolvedId];
             matches.Add(new RuleSourceMatchDto
             {
                 SourceItemId = item.Id,
-                SourceVariantId = !string.IsNullOrWhiteSpace(singleVar.UserProductId) ? singleVar.UserProductId : singleVar.Id.ToString(),
+                SourceVariantId = singleVar.VariantId,
                 SourceSku = singleVar.SellerSku!,
                 Quantity = component.Quantity
             });

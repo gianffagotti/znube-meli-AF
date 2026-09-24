@@ -58,6 +58,8 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddScoped<StockLocationProcessor>();
         services.AddScoped<IStockSyncSourceService, StockSyncSourceService>();
         services.AddSingleton<ISkuParser, SkuParserService>();
+        services.AddScoped<IMeliItemNormalizer, MeliItemNormalizer>();
+        services.AddScoped<IMeliCatalogHydrator, MeliCatalogHydrator>();
 
         // Calculators
         services.AddSingleton<IStockCalculator, FullStockCalculator>();

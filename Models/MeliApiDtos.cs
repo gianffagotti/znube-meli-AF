@@ -244,5 +244,8 @@ public class MeliItemSearchQuery
     public string? SellerSku { get; set; }
     [JsonPropertyName("user_product_id")]
     public string? UserProductId { get; set; }
+    /// <summary>Filter by catalog product ID (family). Used by MeliCatalogHydrator to find sibling items.</summary>
+    [JsonPropertyName("catalog_product_id")]
+    public string? CatalogProductId { get; set; }
     public string? Status { get; set; } = "active";
 }

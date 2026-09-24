@@ -143,7 +143,8 @@ public class MeliApiClient : IMeliApiClient
         if (idList.Count == 0) return new List<MeliItem>();
         var client = GetClient();
         var idsParam = string.Join(",", idList);
-        var url = $"items?ids={idsParam}&include_attributes=all&attributes=id,shipping,variations,seller_custom_field,attributes,title,price,thumbnail,permalink";
+        // Includes catalog fields (catalog_listing, catalog_product_id, item_relations) for Families support. Spec: meli-catalog-dto-extensions.
+        var url = $"items?ids={idsParam}&include_attributes=all&attributes=id,user_product_id,shipping,variations,seller_custom_field,attributes,title,price,thumbnail,permalink,catalog_listing,catalog_product_id,item_relations,available_quantity";
         using var res = await client.GetAsync(url, cancellationToken);
         if (!res.IsSuccessStatusCode) return new List<MeliItem>();
         var json = await res.Content.ReadAsStringAsync(cancellationToken);
@@ -207,6 +208,7 @@ public class MeliApiClient : IMeliApiClient
         if (!string.IsNullOrWhiteSpace(query?.Query)) parts.Add("q=" + Uri.EscapeDataString(query.Query));
         if (!string.IsNullOrWhiteSpace(query?.SellerSku)) parts.Add("seller_sku=" + Uri.EscapeDataString(query.SellerSku));
         if (!string.IsNullOrWhiteSpace(query?.UserProductId)) parts.Add("user_product_id=" + Uri.EscapeDataString(query.UserProductId));
+        if (!string.IsNullOrWhiteSpace(query?.CatalogProductId)) parts.Add("catalog_product_id=" + Uri.EscapeDataString(query.CatalogProductId));
         var queryString = string.Join("&", parts);
         var url = $"users/{sellerId}/items/search?{queryString}";
         using var res = await client.GetAsync(url, cancellationToken);
