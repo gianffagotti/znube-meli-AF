@@ -1,6 +1,6 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
-using meli_znube_integration.Models;
+using meli_znube_integration.Models.Canonical;
 using meli_znube_integration.Models.Dtos;
 using Microsoft.Extensions.Logging;
 
@@ -22,69 +22,62 @@ public class StockSyncSourceService : IStockSyncSourceService
         _logger = logger;
     }
 
-    public async Task EnrichSourceItemsWithZnubeStockAsync(List<MeliItem> sourceItems, string ruleType, bool fromWorker, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<CanonicalItem>> EnrichSourceItemsWithZnubeStockAsync(
+        IReadOnlyList<CanonicalItem> sourceItems,
+        string ruleType,
+        bool fromWorker,
+        CancellationToken cancellationToken = default)
     {
-        if (sourceItems == null) return;
+        if (sourceItems == null || sourceItems.Count == 0) return [];
+
         var useProductId = fromWorker ||
-            (sourceItems.SelectMany(si => si.Variations).Count() > 5 && string.Equals(ruleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase));
+            (sourceItems.SelectMany(si => si.Variations).Count() > 5 &&
+             string.Equals(ruleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase));
 
         if (useProductId)
-            await EnrichByProductIdAsync(sourceItems, cancellationToken);
+            return await EnrichByProductIdAsync(sourceItems, cancellationToken);
         else
-            await EnrichBySkuAsync(sourceItems, cancellationToken);
+            return await EnrichBySkuAsync(sourceItems, cancellationToken);
     }
 
     /// <summary>Strategy by SKU: one call per variant. 404 → 0; 5xx/timeout → propagate. Spec 03.</summary>
-    private async Task EnrichBySkuAsync(List<MeliItem> sourceItems, CancellationToken ct)
+    private async Task<IReadOnlyList<CanonicalItem>> EnrichBySkuAsync(IReadOnlyList<CanonicalItem> sourceItems, CancellationToken ct)
     {
+        var result = new List<CanonicalItem>(sourceItems.Count);
+
         foreach (var item in sourceItems)
         {
-            if (item.Variations != null && item.Variations.Count > 0)
+            var enrichedVariants = new List<CanonicalVariant>(item.Variations.Count);
+            foreach (var variant in item.Variations)
             {
-                foreach (var variation in item.Variations)
+                var sku = variant.SellerSku;
+                if (string.IsNullOrWhiteSpace(sku))
                 {
-                    var sku = variation.SellerSku ?? item.SellerSku;
-                    if (string.IsNullOrWhiteSpace(sku)) continue;
-                    var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
-                    var qty = await GetZnubeQuantityBySkuAsync(normalizedSku, ct);
-                    variation.AvailableQuantity = qty;
+                    enrichedVariants.Add(variant);
+                    continue;
                 }
-            }
-            else
-            {
-                var sku = item.SellerSku;
-                if (string.IsNullOrWhiteSpace(sku)) continue;
                 var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
                 var qty = await GetZnubeQuantityBySkuAsync(normalizedSku, ct);
-                item.AvailableQuantity = qty;
+                enrichedVariants.Add(variant with { AvailableQuantity = qty });
             }
+            result.Add(item with { Variations = enrichedVariants });
         }
+
+        return result;
     }
 
     /// <summary>Strategy by ProductId: group by productId, one call per product, map to variants. 404/empty → 0 for that product; 5xx → propagate. Spec 03.</summary>
-    private async Task EnrichByProductIdAsync(List<MeliItem> sourceItems, CancellationToken ct)
+    private async Task<IReadOnlyList<CanonicalItem>> EnrichByProductIdAsync(IReadOnlyList<CanonicalItem> sourceItems, CancellationToken ct)
     {
-        var skuToQty = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var productIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Build SKU → productId mapping
         var skuToProductId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var productIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var item in sourceItems)
         {
-            if (item.Variations != null && item.Variations.Count > 0)
+            foreach (var variant in item.Variations)
             {
-                foreach (var variation in item.Variations)
-                {
-                    var sku = variation.SellerSku ?? item.SellerSku;
-                    if (string.IsNullOrWhiteSpace(sku)) continue;
-                    var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
-                    var productId = ZnubeLogicExtensions.GetProductIdFromSku(normalizedSku);
-                    productIds.Add(productId);
-                    skuToProductId[normalizedSku] = productId;
-                }
-            }
-            else
-            {
-                var sku = item.SellerSku;
+                var sku = variant.SellerSku;
                 if (string.IsNullOrWhiteSpace(sku)) continue;
                 var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
                 var productId = ZnubeLogicExtensions.GetProductIdFromSku(normalizedSku);
@@ -93,6 +86,8 @@ public class StockSyncSourceService : IStockSyncSourceService
             }
         }
 
+        // Fetch stock by productId
+        var skuToQty = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var productId in productIds)
         {
             var response = await _znubeClient.GetStockByProductIdAsync(productId, ct);
@@ -107,26 +102,27 @@ public class StockSyncSourceService : IStockSyncSourceService
             }
         }
 
+        // Build enriched CanonicalItem list (immutable, using with {})
+        var result = new List<CanonicalItem>(sourceItems.Count);
         foreach (var item in sourceItems)
         {
-            if (item.Variations != null && item.Variations.Count > 0)
+            var enrichedVariants = new List<CanonicalVariant>(item.Variations.Count);
+            foreach (var variant in item.Variations)
             {
-                foreach (var variation in item.Variations)
+                var sku = variant.SellerSku;
+                if (string.IsNullOrWhiteSpace(sku))
                 {
-                    var sku = variation.SellerSku ?? item.SellerSku;
-                    if (string.IsNullOrWhiteSpace(sku)) continue;
-                    var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
-                    variation.AvailableQuantity = skuToQty.TryGetValue(normalizedSku, out var q) ? q : 0;
+                    enrichedVariants.Add(variant);
+                    continue;
                 }
-            }
-            else
-            {
-                var sku = item.SellerSku;
-                if (string.IsNullOrWhiteSpace(sku)) continue;
                 var normalizedSku = ZnubeLogicExtensions.NormalizeSellerSku(sku);
-                item.AvailableQuantity = skuToQty.TryGetValue(normalizedSku, out var q) ? q : 0;
+                var qty = skuToQty.TryGetValue(normalizedSku, out var q) ? q : 0;
+                enrichedVariants.Add(variant with { AvailableQuantity = qty });
             }
+            result.Add(item with { Variations = enrichedVariants });
         }
+
+        return result;
     }
 
     /// <summary>Znube 404 (null response) → 0. 5xx/timeout → propagate (never return 0 to avoid mass-zero on MELI). Spec 03.</summary>
@@ -139,17 +135,18 @@ public class StockSyncSourceService : IStockSyncSourceService
         return (int)Math.Max(0, skuItem.Stock.Sum(d => d.Quantity));
     }
 
-    public async Task<bool> ShouldSkipFulfillmentTargetAsync(MeliItem targetItem, CancellationToken cancellationToken = default)
+    public async Task<bool> ShouldSkipFulfillmentTargetAsync(CanonicalItem targetItem, CancellationToken cancellationToken = default)
     {
         if (targetItem == null) return true;
-        var logisticType = targetItem.Shipping?.LogisticType;
+
+        var logisticType = targetItem.LogisticType;
         if (string.IsNullOrWhiteSpace(logisticType)) return false;
         if (!string.Equals(logisticType, "fulfillment", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(logisticType, "full", StringComparison.OrdinalIgnoreCase))
             return false;
 
         // Item is FULL: skip unless hybrid (has selling_address stock)
-        var userProductId = GetFirstUserProductId(targetItem);
+        var userProductId = GetFirstVariantId(targetItem);
         if (string.IsNullOrWhiteSpace(userProductId)) return true;
 
         var stockResponse = await _meliClient.GetUserProductStockResponseAsync(userProductId, cancellationToken);
@@ -161,13 +158,8 @@ public class StockSyncSourceService : IStockSyncSourceService
         return !hasSellingAddress;
     }
 
-    private static string? GetFirstUserProductId(MeliItem item)
+    private static string? GetFirstVariantId(CanonicalItem item)
     {
-        if (item.Variations != null && item.Variations.Count > 0)
-        {
-            var first = item.Variations.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v.UserProductId));
-            return first?.UserProductId;
-        }
-        return !string.IsNullOrWhiteSpace(item.UserProductId) ? item.UserProductId : null;
+        return item.Variations.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v.VariantId))?.VariantId;
     }
 }

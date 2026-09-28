@@ -1,3 +1,4 @@
+using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Models.Canonical;
 
@@ -12,7 +13,8 @@ namespace meli_znube_integration.Services;
 ///     Each <see cref="MeliVariation"/> carries its own SKU (via the SELLER_SKU attribute
 ///     already computed in <see cref="MeliVariation.SellerSku"/>) and available quantity.
 ///   - Branch B (root-SKU / no variations): <c>MeliItem.Variations</c> is empty or null.
-///     SKU and stock are read from the root <see cref="MeliItem"/> fields.
+///     SKU and stock are copied to the root <see cref="CanonicalItem"/> and also to exactly
+///     one synthetic <see cref="CanonicalVariant"/> (<c>VariantId = item.Id</c>).
 ///
 /// This class performs no I/O. Design decisions: §D2 (service layer), §D4 (single normalizer).
 /// Spec: meli-item-normalizer.
@@ -59,15 +61,26 @@ public sealed class MeliItemNormalizer : IMeliItemNormalizer
             };
         }
 
-        // Task 3.3 — Branch B: item without variations (root-SKU schema)
+        // Task 3.3 — Branch B: item without variations (root-SKU schema).
+        // Always emit exactly one synthetic CanonicalVariant so calculators and
+        // the frontend mapping table can iterate Variations uniformly.
+        var sku = StockLocationHelpers.ResolveRootSellerSku(item);
         return new CanonicalItem
         {
             Id = item.Id,
             Title = item.Title,
-            SellerSku = item.SellerSku,
+            SellerSku = sku,
             AvailableQuantity = item.AvailableQuantity,
             LogisticType = logisticType,
-            Variations = []
+            Variations =
+            [
+                new CanonicalVariant
+                {
+                    VariantId = item.Id,
+                    SellerSku = sku,
+                    AvailableQuantity = item.AvailableQuantity
+                }
+            ]
         };
     }
 }

@@ -1,6 +1,7 @@
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Canonical;
 using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
 using meli_znube_integration.Services.Calculators;
@@ -17,6 +18,8 @@ public class StockSyncWorker
     private readonly IStockSyncSourceService _stockSyncSourceService;
     private readonly StockCalculatorFactory _calculatorFactory;
     private readonly IDashboardLogService _dashboardLogService;
+    private readonly IMeliCatalogHydrator _hydrator;
+    private readonly IMeliItemNormalizer _normalizer;
     private readonly ILogger<StockSyncWorker> _logger;
 
     public StockSyncWorker(
@@ -25,6 +28,8 @@ public class StockSyncWorker
         IStockSyncSourceService stockSyncSourceService,
         StockCalculatorFactory calculatorFactory,
         IDashboardLogService dashboardLogService,
+        IMeliCatalogHydrator hydrator,
+        IMeliItemNormalizer normalizer,
         ILogger<StockSyncWorker> logger)
     {
         _stockRuleService = stockRuleService;
@@ -32,6 +37,8 @@ public class StockSyncWorker
         _stockSyncSourceService = stockSyncSourceService;
         _calculatorFactory = calculatorFactory;
         _dashboardLogService = dashboardLogService;
+        _hydrator = hydrator;
+        _normalizer = normalizer;
         _logger = logger;
     }
 
@@ -58,6 +65,7 @@ public class StockSyncWorker
 
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 };
         var sellerId = long.Parse(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId));
+        var sellerIdStr = sellerId.ToString(); // used for HydrateAsync
 
         await Parallel.ForEachAsync(rules, parallelOptions, async (rule, ct) =>
         {
@@ -67,12 +75,13 @@ public class StockSyncWorker
                 var isFullRule = StockRuleTypes.IsFull(rule.RuleType)
                     && (rule.Components == null || rule.Components.Count == 0);
 
-                List<MeliItem> sourceItems;
+                IReadOnlyList<CanonicalItem> canonicalSourceItems;
+
                 if (isFullRule)
                 {
-                    // FULL: build synthetic source items from Mappings (SKU-only); Znube enriches by SKU.
-                    sourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule);
-                    if (sourceItems.Count == 0)
+                    // FULL: build synthetic CanonicalItems from Mappings (SKU-only); Znube enriches by SKU.
+                    canonicalSourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule);
+                    if (canonicalSourceItems.Count == 0)
                     {
                         _logger.LogWarning("FULL rule for Target {TargetItemId} has no mappings. Skipping.", targetItemId);
                         return;
@@ -80,14 +89,15 @@ public class StockSyncWorker
                 }
                 else
                 {
-                    // PACK/COMBO: fetch source items from MELI by component IDs.
+                    // PACK/COMBO: fetch source items from MELI by component IDs, then hydrate+normalize.
                     var components = rule.Components;
                     if (components == null || components.Count == 0)
                     {
                         _logger.LogWarning("Rule for Target {TargetItemId} has no components. Skipping.", targetItemId);
                         return;
                     }
-                    sourceItems = new List<MeliItem>();
+
+                    var rawSourceItems = new List<MeliItem>();
                     foreach (var comp in components)
                     {
                         string itemId = comp.SourceItemId;
@@ -100,20 +110,31 @@ public class StockSyncWorker
                         if (!string.IsNullOrWhiteSpace(itemId))
                         {
                             var items = await _meliClient.GetItemsAsync(new[] { itemId });
-                            if (items != null && items.Count > 0) sourceItems.AddRange(items);
+                            if (items != null && items.Count > 0) rawSourceItems.AddRange(items);
                         }
                     }
-                    if (sourceItems.Count == 0)
+
+                    if (rawSourceItems.Count == 0)
                     {
                         _logger.LogWarning("Could not fetch source items for Target {TargetItemId}. Skipping.", targetItemId);
                         return;
                     }
+
+                    // Hydrate → Normalize each source item
+                    var sourceList = new List<CanonicalItem>(rawSourceItems.Count);
+                    foreach (var raw in rawSourceItems)
+                    {
+                        var hydrated = await _hydrator.HydrateAsync(raw, sellerIdStr, ct);
+                        sourceList.Add(_normalizer.Normalize(hydrated));
+                    }
+                    canonicalSourceItems = sourceList;
                 }
 
-                // Overwrite quantities with Znube (FULL→SKU, PACK/COMBO→ProductId in worker). Spec 03.
-                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, rule.RuleType, fromWorker: true, ct);
+                // Overwrite quantities with Znube stock (returns new immutable list). Spec 03.
+                var enrichedSourceItems = await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(
+                    canonicalSourceItems, rule.RuleType, fromWorker: true, ct);
 
-                // Fetch target item
+                // Fetch and normalize target item
                 string finalTargetItemId = targetItemId;
                 if (!finalTargetItemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
                 {
@@ -121,14 +142,19 @@ public class StockSyncWorker
                     var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
                     if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
                 }
+
                 var targetItems = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });
-                var targetItem = targetItems?.FirstOrDefault();
-                if (targetItem == null)
+                var rawTargetItem = targetItems?.FirstOrDefault();
+                if (rawTargetItem == null)
                 {
                     _logger.LogWarning("Could not fetch Target Item {TargetItemId}. Skipping.", targetItemId);
                     return;
                 }
-                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem, ct))
+
+                var hydratedTarget = await _hydrator.HydrateAsync(rawTargetItem, sellerIdStr, ct);
+                var targetCanonical = _normalizer.Normalize(hydratedTarget);
+
+                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetCanonical, ct))
                 {
                     _logger.LogInformation("Skipping FULL-only item {TargetItemId} (no selling_address).", targetItemId);
                     return;
@@ -138,7 +164,7 @@ public class StockSyncWorker
                 try
                 {
                     var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
-                    updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
+                    updates = await calculator.CalculateStockAsync(rule, targetCanonical, enrichedSourceItems);
                 }
                 catch (Exception ex)
                 {
@@ -149,6 +175,7 @@ public class StockSyncWorker
                     }
                     return;
                 }
+
                 foreach (var update in updates)
                 {
                     var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
@@ -165,7 +192,7 @@ public class StockSyncWorker
                             await LogStockUpdateInfoAsync(
                                 finalTargetItemId,
                                 update.TargetVariantId,
-                                ResolveTargetSku(targetItem, update.TargetVariantId),
+                                ResolveTargetSku(targetCanonical, update.TargetVariantId),
                                 currentStock.Value.Quantity,
                                 update.NewQuantity,
                                 ct);
@@ -184,7 +211,7 @@ public class StockSyncWorker
                                             null,
                                             finalTargetItemId,
                                             update.TargetVariantId,
-                                            ResolveTargetSku(targetItem, update.TargetVariantId),
+                                            ResolveTargetSku(targetCanonical, update.TargetVariantId),
                                             currentStock.Value.Quantity,
                                             update.NewQuantity,
                                             "update_conflict",
@@ -199,7 +226,7 @@ public class StockSyncWorker
                                     await LogStockUpdateInfoAsync(
                                         finalTargetItemId,
                                         update.TargetVariantId,
-                                        ResolveTargetSku(targetItem, update.TargetVariantId),
+                                        ResolveTargetSku(targetCanonical, update.TargetVariantId),
                                         currentStock.Value.Quantity,
                                         update.NewQuantity,
                                         ct);
@@ -214,7 +241,7 @@ public class StockSyncWorker
                                         ex,
                                         finalTargetItemId,
                                         update.TargetVariantId,
-                                        ResolveTargetSku(targetItem, update.TargetVariantId),
+                                        ResolveTargetSku(targetCanonical, update.TargetVariantId),
                                         currentStock.Value.Quantity,
                                         update.NewQuantity,
                                         "update_exception",
@@ -276,10 +303,10 @@ public class StockSyncWorker
             cancellationToken: ct);
     }
 
-    private static string? ResolveTargetSku(MeliItem targetItem, string targetVariantId)
+    private static string? ResolveTargetSku(CanonicalItem targetItem, string targetVariantId)
     {
-        var variation = targetItem.Variations?.FirstOrDefault(v =>
-            string.Equals(v.UserProductId, targetVariantId, StringComparison.OrdinalIgnoreCase));
-        return StockLocationHelpers.ExtractSku(targetItem, variation);
+        var variation = targetItem.Variations.FirstOrDefault(v =>
+            string.Equals(v.VariantId, targetVariantId, StringComparison.OrdinalIgnoreCase));
+        return variation?.SellerSku;
     }
 }

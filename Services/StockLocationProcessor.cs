@@ -2,6 +2,7 @@ using System.Text.Json;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Canonical;
 using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services.Calculators;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,8 @@ public class StockLocationProcessor
     private readonly IStockSyncSourceService _stockSyncSourceService;
     private readonly StockCalculatorFactory _calculatorFactory;
     private readonly IDashboardLogService _dashboardLogService;
+    private readonly IMeliCatalogHydrator _hydrator;
+    private readonly IMeliItemNormalizer _normalizer;
     private readonly ILogger<StockLocationProcessor> _logger;
 
     public StockLocationProcessor(
@@ -23,6 +26,8 @@ public class StockLocationProcessor
         IStockSyncSourceService stockSyncSourceService,
         StockCalculatorFactory calculatorFactory,
         IDashboardLogService dashboardLogService,
+        IMeliCatalogHydrator hydrator,
+        IMeliItemNormalizer normalizer,
         ILogger<StockLocationProcessor> logger)
     {
         _stockRuleService = stockRuleService;
@@ -30,6 +35,8 @@ public class StockLocationProcessor
         _stockSyncSourceService = stockSyncSourceService;
         _calculatorFactory = calculatorFactory;
         _dashboardLogService = dashboardLogService;
+        _hydrator = hydrator;
+        _normalizer = normalizer;
         _logger = logger;
     }
 
@@ -57,8 +64,9 @@ public class StockLocationProcessor
 
         var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
         string? sourceItemId = null;
-        MeliItem? sourceItem = null;
+        MeliItem? sourceItemRaw = null;
         string? sku = null;
+
         try
         {
             var search = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = userProductId }, ct);
@@ -66,11 +74,11 @@ public class StockLocationProcessor
             if (!string.IsNullOrWhiteSpace(sourceItemId))
             {
                 var items = await _meliClient.GetItemsAsync([sourceItemId], ct);
-                sourceItem = items?.FirstOrDefault();
-                if (sourceItem != null)
+                sourceItemRaw = items?.FirstOrDefault();
+                if (sourceItemRaw != null)
                 {
-                    var variation = sourceItem.Variations?.FirstOrDefault(v => v.UserProductId == userProductId);
-                    sku = StockLocationHelpers.ExtractSku(sourceItem, variation);
+                    var variation = sourceItemRaw.Variations?.FirstOrDefault(v => v.UserProductId == userProductId);
+                    sku = StockLocationHelpers.ExtractSku(sourceItemRaw, variation);
                 }
             }
         }
@@ -80,6 +88,7 @@ public class StockLocationProcessor
             return;
         }
 
+        // ── FULL rules path ──
         if (!string.IsNullOrWhiteSpace(sku))
         {
             var fullRules = await _stockRuleService.GetFullRulesBySkuAsync(sellerId, sku);
@@ -90,23 +99,30 @@ public class StockLocationProcessor
                 {
                     try
                     {
-                        var sourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule, sku);
-                        if (sourceItems.Count == 0) continue;
+                        // Build synthetics (CanonicalItem, no Hydrate/Normalize needed)
+                        var syntheticSourceItems = FullRuleSourceItemsHelper.BuildSyntheticSourceItemsForFullRule(rule, sku);
+                        if (syntheticSourceItems.Count == 0) continue;
 
-                        await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, StockRuleTypes.Full, fromWorker: false, ct);
+                        var enrichedSourceItems = await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(
+                            syntheticSourceItems, StockRuleTypes.Full, fromWorker: false, ct);
 
                         var finalTargetItemId = await ResolveTargetItemIdAsync(sellerId, rule.TargetItemId, ct);
                         if (string.IsNullOrWhiteSpace(finalTargetItemId)) continue;
+
                         var targetItemsList = await _meliClient.GetItemsAsync(new[] { finalTargetItemId }, ct);
-                        var targetItem = targetItemsList?.FirstOrDefault();
-                        if (targetItem == null) continue;
-                        if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem, ct)) continue;
+                        var rawTarget = targetItemsList?.FirstOrDefault();
+                        if (rawTarget == null) continue;
+
+                        var hydratedTarget = await _hydrator.HydrateAsync(rawTarget, sellerId, ct);
+                        var targetCanonical = _normalizer.Normalize(hydratedTarget);
+
+                        if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetCanonical, ct)) continue;
 
                         var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
-                        var updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
+                        var updates = await calculator.CalculateStockAsync(rule, targetCanonical, enrichedSourceItems);
                         foreach (var update in updates)
                         {
-                            await ApplyUpdateWithLogsAsync(rule, targetItem, finalTargetItemId, update, ct);
+                            await ApplyUpdateWithLogsAsync(rule, targetCanonical, finalTargetItemId, update, ct);
                         }
                     }
                     catch (Exception ex)
@@ -122,6 +138,7 @@ public class StockLocationProcessor
             return;
         }
 
+        // ── PACK/COMBO rules path ──
         var affectedIndexes = await _stockRuleService.GetAffectedRulesBySourceAsync(sourceItemId);
         if (affectedIndexes == null || affectedIndexes.Count == 0)
         {
@@ -149,35 +166,47 @@ public class StockLocationProcessor
                 var itemsId = components
                     .Select(c => c.SourceItemId)
                     .Where(id => !string.IsNullOrWhiteSpace(id));
-                var items = await _meliClient.GetItemsAsync(itemsId, ct);
+                var rawItems = await _meliClient.GetItemsAsync(itemsId, ct);
 
                 var mappingsSourceMatches = rule.Mappings.SelectMany(m => m.SourceMatches).Select(sm => sm.SourceVariantId);
                 var mappingsSizeMatches = rule.Mappings.Where(m => m.MatchSize is not null).Select(m => m.MatchSize!);
-                var sourceItems = items.Select(i =>
+
+                // Hydrate → Normalize → filter relevant variations (immutable with {})
+                var canonicalSourceItems = new List<CanonicalItem>(rawItems.Count);
+                foreach (var rawItem in rawItems)
                 {
-                    i.Variations = i.Variations?
-                        .Where(v => mappingsSourceMatches.Any(msm => msm.Equals(v.UserProductId, StringComparison.OrdinalIgnoreCase)) ||
-                                    mappingsSizeMatches.Any(msm => msm.Equals(PackStockCalculator.ParseSizeFromSku(v.SellerSku), StringComparison.OrdinalIgnoreCase)))
-                        .ToList() ?? [];
-                    return i;
-                }).ToList();
+                    var hydrated = await _hydrator.HydrateAsync(rawItem, sellerId, ct);
+                    var canonical = _normalizer.Normalize(hydrated);
+                    var filteredVariants = canonical.Variations
+                        .Where(v =>
+                            mappingsSourceMatches.Any(msm => msm.Equals(v.VariantId, StringComparison.OrdinalIgnoreCase)) ||
+                            mappingsSizeMatches.Any(msm => msm.Equals(PackStockCalculator.ParseSizeFromSku(v.SellerSku), StringComparison.OrdinalIgnoreCase)))
+                        .ToList();
+                    canonicalSourceItems.Add(canonical with { Variations = filteredVariants });
+                }
 
-                if (sourceItems.Count == 0) continue;
+                if (canonicalSourceItems.Count == 0) continue;
 
-                await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(sourceItems, rule.RuleType, fromWorker: false, ct);
+                var enrichedSourceItems = await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(
+                    canonicalSourceItems, rule.RuleType, fromWorker: false, ct);
 
                 var finalTargetItemId = await ResolveTargetItemIdAsync(sellerId, targetItemId, ct);
                 if (string.IsNullOrWhiteSpace(finalTargetItemId)) continue;
+
                 var targetItemsToCheck = await _meliClient.GetItemsAsync(new[] { finalTargetItemId }, ct);
-                var targetItem = targetItemsToCheck?.FirstOrDefault();
-                if (targetItem == null) continue;
-                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetItem, ct)) continue;
+                var rawTargetItem = targetItemsToCheck?.FirstOrDefault();
+                if (rawTargetItem == null) continue;
+
+                var hydratedTargetItem = await _hydrator.HydrateAsync(rawTargetItem, sellerId, ct);
+                var targetCanonical = _normalizer.Normalize(hydratedTargetItem);
+
+                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetCanonical, ct)) continue;
 
                 List<VariantStockUpdate> updates;
                 try
                 {
                     var calculator = _calculatorFactory.GetCalculator(rule.RuleType);
-                    updates = await calculator.CalculateStockAsync(rule, targetItem, sourceItems);
+                    updates = await calculator.CalculateStockAsync(rule, targetCanonical, enrichedSourceItems);
                 }
                 catch (Exception ex)
                 {
@@ -191,7 +220,7 @@ public class StockLocationProcessor
 
                 foreach (var update in updates)
                 {
-                    await ApplyUpdateWithLogsAsync(rule, targetItem, finalTargetItemId, update, ct);
+                    await ApplyUpdateWithLogsAsync(rule, targetCanonical, finalTargetItemId, update, ct);
                 }
             }
             catch (Exception ex)
@@ -201,7 +230,7 @@ public class StockLocationProcessor
         }
     }
 
-    private async Task ApplyUpdateWithLogsAsync(StockRuleDto rule, MeliItem targetItem, string targetItemId, VariantStockUpdate update, CancellationToken ct)
+    private async Task ApplyUpdateWithLogsAsync(StockRuleDto rule, CanonicalItem targetItem, string targetItemId, VariantStockUpdate update, CancellationToken ct)
     {
         var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId, ct);
         if (currentStock == null || currentStock.Value.Quantity == update.NewQuantity)
@@ -288,11 +317,11 @@ public class StockLocationProcessor
             cancellationToken: ct);
     }
 
-    private static string? ResolveTargetSku(MeliItem targetItem, string targetVariantId)
+    private static string? ResolveTargetSku(CanonicalItem targetItem, string targetVariantId)
     {
-        var variation = targetItem.Variations?.FirstOrDefault(v =>
-            string.Equals(v.UserProductId, targetVariantId, StringComparison.OrdinalIgnoreCase));
-        return StockLocationHelpers.ExtractSku(targetItem, variation);
+        var variation = targetItem.Variations.FirstOrDefault(v =>
+            string.Equals(v.VariantId, targetVariantId, StringComparison.OrdinalIgnoreCase));
+        return variation?.SellerSku?.ToUpper();
     }
 
     private async Task<string?> ResolveTargetItemIdAsync(string sellerId, string targetItemId, CancellationToken ct)

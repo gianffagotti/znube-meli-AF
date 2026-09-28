@@ -1,5 +1,6 @@
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Canonical;
 
 namespace meli_znube_integration.Services.Calculators;
 
@@ -22,7 +23,7 @@ public class PackStockCalculator : IStockCalculator
         return string.IsNullOrEmpty(segment) ? null : segment;
     }
 
-    public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, MeliItem targetItem, List<MeliItem> sourceItems)
+    public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, CanonicalItem targetItem, IReadOnlyList<CanonicalItem> sourceItems)
     {
         var updates = new List<VariantStockUpdate>();
 
@@ -32,11 +33,9 @@ public class PackStockCalculator : IStockCalculator
 
         int defaultPackQty = rule.DefaultPackQuantity > 0 ? rule.DefaultPackQuantity : 1;
 
-        var targetVariants = targetItem.Variations;
-
-        foreach (var targetVar in targetVariants)
+        foreach (var targetVar in targetItem.Variations)
         {
-            if (string.IsNullOrWhiteSpace(targetVar.SellerSku) && string.IsNullOrWhiteSpace(targetVar.UserProductId)) continue;
+            if (string.IsNullOrWhiteSpace(targetVar.SellerSku) && string.IsNullOrWhiteSpace(targetVar.VariantId)) continue;
 
             var mapping = FindMappingForTarget(rule, targetVar);
             if (mapping == null) continue;
@@ -69,26 +68,26 @@ public class PackStockCalculator : IStockCalculator
             }
 
             int calculatedStock = (int)Math.Floor((double)poolStock / packQty);
-            updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), calculatedStock));
+            updates.Add(new VariantStockUpdate(targetVar.VariantId, calculatedStock));
         }
 
         return Task.FromResult(updates);
     }
 
     /// <summary>Resolve source variant and return AvailableQuantity; 0 if not found (fail-safe).</summary>
-    private static int GetSourceStock(List<MeliVariation> sourceVariants, RuleSourceMatchDto sm)
+    private static int GetSourceStock(List<CanonicalVariant> sourceVariants, RuleSourceMatchDto sm)
     {
         var idToFind = !string.IsNullOrWhiteSpace(sm.SourceVariantId) ? sm.SourceVariantId : sm.SourceItemId;
-        var sourceVar = sourceVariants.FirstOrDefault(s => s.UserProductId == idToFind);
+        var sourceVar = sourceVariants.FirstOrDefault(s => s.VariantId == idToFind);
         if (sourceVar == null && !string.IsNullOrWhiteSpace(sm.SourceSku))
             sourceVar = sourceVariants.FirstOrDefault(s => string.Equals(s.SellerSku, sm.SourceSku, StringComparison.OrdinalIgnoreCase));
         return sourceVar?.AvailableQuantity ?? 0;
     }
 
-    private static VariantMappingDto? FindMappingForTarget(StockRuleDto rule, MeliVariation targetVar)
+    private static VariantMappingDto? FindMappingForTarget(StockRuleDto rule, CanonicalVariant targetVar)
     {
         if (rule.Mappings == null || rule.Mappings.Count == 0) return null;
-        var mapping = rule.Mappings.FirstOrDefault(m => m.TargetVariantId == targetVar.UserProductId);
+        var mapping = rule.Mappings.FirstOrDefault(m => m.TargetVariantId == targetVar.VariantId);
         if (mapping == null && ZnubeLogicExtensions.IsValidSKU(targetVar.SellerSku ?? ""))
             mapping = rule.Mappings.FirstOrDefault(m => string.Equals(m.TargetSku, targetVar.SellerSku, StringComparison.OrdinalIgnoreCase));
         return mapping;

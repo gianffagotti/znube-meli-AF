@@ -5,6 +5,7 @@ using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Models.Dtos;
+using meli_znube_integration.Services;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
@@ -14,17 +15,20 @@ namespace meli_znube_integration.Functions;
 public class MeliProxyApi
 {
     private readonly IMeliApiClient _meliClient;
+    private readonly IMeliCatalogHydrator _hydrator;
     private readonly ILogger<MeliProxyApi> _logger;
 
-    public MeliProxyApi(IMeliApiClient meliClient, ILogger<MeliProxyApi> logger)
+    public MeliProxyApi(IMeliApiClient meliClient, IMeliCatalogHydrator hydrator, ILogger<MeliProxyApi> logger)
     {
         _meliClient = meliClient;
+        _hydrator = hydrator;
         _logger = logger;
     }
 
     [Function("MeliProxySearch")]
     public async Task<HttpResponseData> Search(
-        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "meli-proxy/search")] HttpRequestData req)
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "meli-proxy/search")] HttpRequestData req,
+        CancellationToken ct)
     {
         try
         {
@@ -43,8 +47,10 @@ public class MeliProxyApi
             // Service-layer logic: if MLA item ID, return it
             if (Regex.IsMatch(cleanQuery, @"^MLA\d+$", RegexOptions.IgnoreCase))
             {
-                var single = await _meliClient.GetItemsAsync([cleanQuery.ToUpperInvariant()]);
+                var single = await _meliClient.GetItemsAsync([cleanQuery.ToUpperInvariant()], ct);
                 var dto = single?.FirstOrDefault();
+                if (dto != null)
+                    dto = await EnsureHydratedWithAtLeastOneVariation(dto, ct);
                 var response = req.CreateResponse(HttpStatusCode.OK);
                 await response.WriteAsJsonAsync(dto != null ? new List<MeliProxyItemDto> { MapToDto(dto) } : new List<MeliProxyItemDto>());
                 return response;
@@ -65,8 +71,11 @@ public class MeliProxyApi
                 return empty;
             }
 
-            var items = await _meliClient.GetItemsAsync(ids);
-            var dtos = items.Select(MapToDto).ToList();
+            var items = await _meliClient.GetItemsAsync(ids, ct);
+            var hydrated = new List<MeliItem>(items.Count);
+            foreach (var item in items)
+                hydrated.Add(await EnsureHydratedWithAtLeastOneVariation(item, ct));
+            var dtos = hydrated.Select(MapToDto).ToList();
 
             var response2 = req.CreateResponse(HttpStatusCode.OK);
             await response2.WriteAsJsonAsync(dtos);
@@ -84,7 +93,8 @@ public class MeliProxyApi
     [Function("MeliProxyGetItem")]
     public async Task<HttpResponseData> GetItem(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "meli-proxy/items/{id}")] HttpRequestData req,
-        string id)
+        string id,
+        CancellationToken ct)
     {
         try
         {
@@ -93,13 +103,15 @@ public class MeliProxyApi
                 return req.CreateResponse(HttpStatusCode.BadRequest);
             }
 
-            var items = await _meliClient.GetItemsAsync([id]);
+            var items = await _meliClient.GetItemsAsync([id], ct);
             var item = items.FirstOrDefault();
 
             if (item == null)
             {
                 return req.CreateResponse(HttpStatusCode.NotFound);
             }
+
+            item = await EnsureHydratedWithAtLeastOneVariation(item, ct);
 
             var response = req.CreateResponse(HttpStatusCode.OK);
             await response.WriteAsJsonAsync(MapToDto(item));
@@ -112,6 +124,35 @@ public class MeliProxyApi
             await response.WriteStringAsync("Internal Server Error");
             return response;
         }
+    }
+
+    private async Task<MeliItem> EnsureHydratedWithAtLeastOneVariation(MeliItem item, CancellationToken ct)
+    {
+        var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+        item = await _hydrator.HydrateAsync(item, sellerId, ct);
+
+        if (item.Variations == null || item.Variations.Count == 0)
+        {
+            item.Variations =
+            [
+                new MeliVariation
+                {
+                    Id = 0,
+                    UserProductId = item.Id,
+                    AvailableQuantity = item.AvailableQuantity,
+                    Attributes =
+                    [
+                        new MeliAttribute
+                        {
+                            Id = MeliConstants.SellerSkuAttributeId,
+                            ValueName = StockLocationHelpers.ResolveRootSellerSku(item)
+                        }
+                    ]
+                }
+            ];
+        }
+
+        return item;
     }
 
     private static MeliProxyItemDto MapToDto(MeliItem item)
@@ -135,10 +176,10 @@ public class MeliProxyApi
     {
         var relevantAttributes = attributes
             .Where(a => !string.IsNullOrEmpty(a.ValueName) && !string.IsNullOrEmpty(a.Id) &&
-                        (a.Id.Contains("COLOR", StringComparison.OrdinalIgnoreCase) || 
+                        (a.Id.Contains("COLOR", StringComparison.OrdinalIgnoreCase) ||
                          a.Id.Contains("SIZE", StringComparison.OrdinalIgnoreCase)))
             .Select(a => a.ValueName);
-            
+
         return string.Join(" - ", relevantAttributes);
     }
 }

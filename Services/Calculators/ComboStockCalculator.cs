@@ -1,5 +1,6 @@
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
+using meli_znube_integration.Models.Canonical;
 
 namespace meli_znube_integration.Services.Calculators;
 
@@ -11,7 +12,7 @@ public class ComboStockCalculator : IStockCalculator
 {
     public string RuleType => StockRuleTypes.Combo;
 
-    public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, MeliItem targetItem, List<MeliItem> sourceItems)
+    public Task<List<VariantStockUpdate>> CalculateStockAsync(StockRuleDto rule, CanonicalItem targetItem, IReadOnlyList<CanonicalItem> sourceItems)
     {
         var updates = new List<VariantStockUpdate>();
 
@@ -19,16 +20,14 @@ public class ComboStockCalculator : IStockCalculator
             .SelectMany(i => i.Variations)
             .ToList();
 
-        var targetVariants = targetItem.Variations;
-
-        foreach (var targetVar in targetVariants)
+        foreach (var targetVar in targetItem.Variations)
         {
             List<RuleSourceMatchDto>? neededIngredientsSourceMatches = null;
             bool hasSpecificMapping = false;
 
             if (rule.Mappings != null && rule.Mappings.Count > 0)
             {
-                var mapping = rule.Mappings.FirstOrDefault(m => m.TargetVariantId == targetVar.UserProductId);
+                var mapping = rule.Mappings.FirstOrDefault(m => m.TargetVariantId == targetVar.VariantId);
                 if (mapping == null && !string.IsNullOrWhiteSpace(targetVar.SellerSku))
                     mapping = rule.Mappings.FirstOrDefault(m => string.Equals(m.TargetSku, targetVar.SellerSku, StringComparison.OrdinalIgnoreCase));
 
@@ -51,7 +50,7 @@ public class ComboStockCalculator : IStockCalculator
                         canUseFallback = false;
                         break;
                     }
-                    var variations = sourceItem.Variations ?? new List<MeliVariation>();
+                    var variations = sourceItem.Variations;
                     if (variations.Count != 1)
                     {
                         canUseFallback = false;
@@ -61,7 +60,7 @@ public class ComboStockCalculator : IStockCalculator
                     fallbackMatches.Add(new RuleSourceMatchDto
                     {
                         SourceItemId = sourceItem.Id ?? c.SourceItemId,
-                        SourceVariantId = !string.IsNullOrWhiteSpace(singleVar.UserProductId) ? singleVar.UserProductId : singleVar.Id.ToString(),
+                        SourceVariantId = singleVar.VariantId, // already resolves UserProductId ?? Id.ToString()
                         SourceSku = singleVar.SellerSku ?? "",
                         Quantity = c.Quantity
                     });
@@ -78,7 +77,7 @@ public class ComboStockCalculator : IStockCalculator
             foreach (var ingredient in neededIngredientsSourceMatches)
             {
                 var idToFind = !string.IsNullOrWhiteSpace(ingredient.SourceVariantId) ? ingredient.SourceVariantId : ingredient.SourceItemId;
-                var sourceVar = sourceVariants.FirstOrDefault(s => s.UserProductId == idToFind);
+                var sourceVar = sourceVariants.FirstOrDefault(s => s.VariantId == idToFind);
                 if (sourceVar == null && !string.IsNullOrWhiteSpace(ingredient.SourceSku))
                     sourceVar = sourceVariants.FirstOrDefault(s => string.Equals(s.SellerSku, ingredient.SourceSku, StringComparison.OrdinalIgnoreCase));
 
@@ -91,7 +90,7 @@ public class ComboStockCalculator : IStockCalculator
             }
 
             if (maxPossible == int.MaxValue) maxPossible = 0;
-            updates.Add(new VariantStockUpdate(targetVar.UserProductId ?? targetVar.Id.ToString(), maxPossible));
+            updates.Add(new VariantStockUpdate(targetVar.VariantId, maxPossible));
         }
 
         return Task.FromResult(updates);
