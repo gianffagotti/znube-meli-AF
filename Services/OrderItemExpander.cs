@@ -85,22 +85,16 @@ public class OrderItemExpander : IOrderItemExpander
 
             if (rule == null)
             {
-                if (!string.IsNullOrWhiteSpace(sku))
+                _logger.LogInformation("No hay regla para ItemId {ItemId}. Marcando item sin asignacion.", item.ItemId);
+                resolved.Add(new OrderItemResolved
                 {
-                    _logger.LogInformation("No hay regla para ItemId {ItemId}. Marcando item sin asignacion.", item.ItemId);
-                    resolved.Add(new OrderItemResolved
-                    {
-                        Sku = sku,
-                        Quantity = qty,
-                        ProductLabel = item.Title,
-                        OrderItemId = item.ItemId,
-                        RuleType = StockRuleTypes.Full
-                    });
-                    continue;
-                }
-
-                _logger.LogInformation("No hay regla para ItemId {ItemId}. Cancelando nota.", item.ItemId);
-                return null;
+                    Sku = sku,
+                    Quantity = qty,
+                    ProductLabel = item.Title,
+                    OrderItemId = item.ItemId,
+                    RuleType = StockRuleTypes.Full
+                });
+                continue;
             }
 
             if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
@@ -129,14 +123,14 @@ public class OrderItemExpander : IOrderItemExpander
                     continue;
                 }
                 if (!string.Equals(mapping.Strategy, "Explicit", StringComparison.OrdinalIgnoreCase))
-                    return null;
+                    continue;
 
                 if (mapping.SourceMatches == null || mapping.SourceMatches.Count != 1)
-                    return null;
+                    continue;
 
                 var source = mapping.SourceMatches[0];
                 if (string.IsNullOrWhiteSpace(source.SourceSku))
-                    return null;
+                    continue;
 
                 var packQty = source.Quantity > 0 ? source.Quantity : 1;
                 resolved.Add(new OrderItemResolved
@@ -177,7 +171,7 @@ public class OrderItemExpander : IOrderItemExpander
                 foreach (var match in matches)
                 {
                     if (string.IsNullOrWhiteSpace(match.SourceSku))
-                        return null;
+                        continue;
                     var comboQty = match.Quantity > 0 ? match.Quantity : 1;
                     resolved.Add(new OrderItemResolved
                     {
@@ -192,7 +186,7 @@ public class OrderItemExpander : IOrderItemExpander
                 continue;
             }
 
-            return null;
+            continue;
         }
 
         return resolved;

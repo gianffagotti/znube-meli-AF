@@ -46,8 +46,8 @@ public class ZnubeAllocationService : IZnubeAllocationService
         if (requests == null) return allocations;
 
         var requestList = requests
-            .Where(r => r != null && !string.IsNullOrWhiteSpace(r.Sku) && r.Quantity > 0)
-            .Select(r => new SkuRequest { Sku = r.Sku.Trim(), Quantity = r.Quantity, ProductLabel = r.ProductLabel })
+            .Where(r => r != null && (!string.IsNullOrWhiteSpace(r.Sku) || !string.IsNullOrWhiteSpace(r.ProductLabel)) && r.Quantity > 0)
+            .Select(r => new SkuRequest { Sku = r.Sku?.Trim() ?? "", Quantity = r.Quantity, ProductLabel = r.ProductLabel })
             .ToList();
         if (requestList.Count == 0) return allocations;
 

@@ -138,7 +138,7 @@ public class MeliProxyApi
                 new MeliVariation
                 {
                     Id = 0,
-                    UserProductId = item.Id,
+                    UserProductId = item.UserProductId,
                     AvailableQuantity = item.AvailableQuantity,
                     Attributes =
                     [
