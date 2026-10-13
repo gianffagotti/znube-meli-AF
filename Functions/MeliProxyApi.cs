@@ -40,46 +40,13 @@ public class MeliProxyApi
                 return req.CreateResponse(HttpStatusCode.BadRequest);
             }
 
-            var sellerIdStr = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
-            var sellerId = long.Parse(sellerIdStr);
-            var cleanQuery = query.Trim();
+            var dtos = await SearchCoreAsync(query, ct);
+            if (dtos == null)
+                return req.CreateResponse(HttpStatusCode.BadRequest);
 
-            // Service-layer logic: if MLA item ID, return it
-            if (Regex.IsMatch(cleanQuery, @"^MLA\d+$", RegexOptions.IgnoreCase))
-            {
-                var single = await _meliClient.GetItemsAsync([cleanQuery.ToUpperInvariant()], ct);
-                var dto = single?.FirstOrDefault();
-                if (dto != null)
-                    dto = await EnsureHydratedWithAtLeastOneVariation(dto, ct);
-                var response = req.CreateResponse(HttpStatusCode.OK);
-                await response.WriteAsJsonAsync(dto != null ? new List<MeliProxyItemDto> { MapToDto(dto) } : new List<MeliProxyItemDto>());
-                return response;
-            }
-
-            var qSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { Query = cleanQuery });
-            var skuSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { SellerSku = cleanQuery });
-            var ids = (qSearch?.Results?.Select(r => r.Id).Where(id => !string.IsNullOrWhiteSpace(id)) ?? Array.Empty<string?>())
-                .Concat(skuSearch?.Results?.Select(r => r.Id).Where(id => !string.IsNullOrWhiteSpace(id)) ?? Array.Empty<string?>())
-                .Distinct()
-                .Cast<string>()
-                .ToList();
-
-            if (ids.Count == 0)
-            {
-                var empty = req.CreateResponse(HttpStatusCode.OK);
-                await empty.WriteAsJsonAsync(new List<MeliItem>());
-                return empty;
-            }
-
-            var items = await _meliClient.GetItemsAsync(ids, ct);
-            var hydrated = new List<MeliItem>(items.Count);
-            foreach (var item in items)
-                hydrated.Add(await EnsureHydratedWithAtLeastOneVariation(item, ct));
-            var dtos = hydrated.Select(MapToDto).ToList();
-
-            var response2 = req.CreateResponse(HttpStatusCode.OK);
-            await response2.WriteAsJsonAsync(dtos);
-            return response2;
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            await response.WriteAsJsonAsync(dtos);
+            return response;
         }
         catch (Exception ex)
         {
@@ -111,7 +78,9 @@ public class MeliProxyApi
                 return req.CreateResponse(HttpStatusCode.NotFound);
             }
 
-            item = await EnsureHydratedWithAtLeastOneVariation(item, ct);
+            var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
+            item = await _hydrator.HydrateAsync(item, sellerId, ct);
+            item = EnsureAtLeastOneVariation(item);
 
             var response = req.CreateResponse(HttpStatusCode.OK);
             await response.WriteAsJsonAsync(MapToDto(item));
@@ -126,32 +95,115 @@ public class MeliProxyApi
         }
     }
 
-    private async Task<MeliItem> EnsureHydratedWithAtLeastOneVariation(MeliItem item, CancellationToken ct)
+    internal async Task<List<MeliProxyItemDto>?> SearchCoreAsync(string? query, CancellationToken ct)
     {
-        var sellerId = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
-        item = await _hydrator.HydrateAsync(item, sellerId, ct);
+        if (string.IsNullOrWhiteSpace(query)) return null;
 
-        if (item.Variations == null || item.Variations.Count == 0)
+        var cleanQuery = query.Trim();
+        if (cleanQuery.StartsWith('#'))
+            cleanQuery = cleanQuery[1..].Trim();
+        if (string.IsNullOrWhiteSpace(cleanQuery)) return null;
+
+        var sellerId = long.Parse(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId));
+
+        if (cleanQuery.StartsWith("MLAU", StringComparison.OrdinalIgnoreCase))
         {
-            item.Variations =
-            [
-                new MeliVariation
-                {
-                    Id = 0,
-                    UserProductId = item.UserProductId,
-                    AvailableQuantity = item.AvailableQuantity,
-                    Attributes =
-                    [
-                        new MeliAttribute
-                        {
-                            Id = MeliConstants.SellerSkuAttributeId,
-                            ValueName = StockLocationHelpers.ResolveRootSellerSku(item)
-                        }
-                    ]
-                }
-            ];
+            var byUserProduct = await LoadByUserProductIdsAsync(sellerId, cleanQuery.ToUpperInvariant(), ct);
+            return byUserProduct.Select(MapToDto).ToList();
         }
 
+        if (TryNormalizeItemId(cleanQuery, out var mlaId))
+        {
+            var single = await _meliClient.GetItemsAsync([mlaId], ct);
+            if (single is { Count: > 0 })
+                return single.Select(MapToDto).ToList();
+        }
+        else if (Regex.IsMatch(cleanQuery, @"^\d{12,}$"))
+        {
+            var userProductIds = await _meliClient.GetUserProductFamilyAsync(cleanQuery, ct);
+            if (userProductIds.Count == 0)
+                return [];
+
+            var familyItems = await LoadByUserProductIdsAsync(sellerId, string.Join(",", userProductIds), ct);
+            return familyItems.Select(MapToDto).ToList();
+        }
+
+        var skuSearch = _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { SellerSku = cleanQuery, Status = "active" }, ct);
+        var textSearch = _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { Query = cleanQuery, Status = "active" }, ct);
+        await Task.WhenAll(skuSearch, textSearch);
+
+        var ids = CollectIds(skuSearch.Result)
+            .Concat(CollectIds(textSearch.Result))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var items = await _meliClient.GetItemsAsync(ids, ct);
+        return items.Select(MapToDto).ToList();
+    }
+
+    private async Task<List<MeliItem>> LoadByUserProductIdsAsync(long sellerId, string userProductIds, CancellationToken ct)
+    {
+        var search = await _meliClient.SearchItemsAsync(
+            sellerId,
+            new MeliItemSearchQuery { UserProductId = userProductIds, Status = "active" },
+            ct);
+        var ids = CollectIds(search);
+        if (ids.Count == 0) return [];
+        return await _meliClient.GetItemsAsync(ids, ct);
+    }
+
+    private static List<string> CollectIds(MeliSearchResponseDto? search)
+    {
+        return search?.Results?
+            .Select(r => r.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
+    }
+
+    private static bool TryNormalizeItemId(string query, out string mlaId)
+    {
+        if (Regex.IsMatch(query, @"^MLA\d+$", RegexOptions.IgnoreCase))
+        {
+            mlaId = "MLA" + Regex.Match(query, @"\d+", RegexOptions.CultureInvariant).Value;
+            return true;
+        }
+
+        if (Regex.IsMatch(query, @"^\d{8,11}$"))
+        {
+            mlaId = "MLA" + query;
+            return true;
+        }
+
+        mlaId = string.Empty;
+        return false;
+    }
+
+    private static MeliItem EnsureAtLeastOneVariation(MeliItem item)
+    {
+        if (item.Variations is { Count: > 0 })
+            return item;
+
+        item.Variations =
+        [
+            new MeliVariation
+            {
+                Id = 0,
+                UserProductId = string.IsNullOrWhiteSpace(item.UserProductId) ? item.Id : item.UserProductId,
+                AvailableQuantity = item.AvailableQuantity,
+                Attributes =
+                [
+                    new MeliAttribute
+                    {
+                        Id = MeliConstants.SellerSkuAttributeId,
+                        ValueName = StockLocationHelpers.ResolveRootSellerSku(item)
+                    }
+                ]
+            }
+        ];
         return item;
     }
 
@@ -162,6 +214,11 @@ public class MeliProxyApi
             Id = item.Id,
             Title = item.Title,
             Thumbnail = item.Thumbnail,
+            FamilyId = string.IsNullOrWhiteSpace(item.FamilyId) ? null : item.FamilyId,
+            FamilyName = item.FamilyName,
+            UserProductId = string.IsNullOrWhiteSpace(item.UserProductId) ? null : item.UserProductId,
+            SellerSku = ResolveListedSku(item),
+            Shipping = item.Shipping,
             Variations = [.. item.Variations.Select(v => new MeliProxyVariationDto
             {
                 Id = v.Id,
@@ -170,6 +227,20 @@ public class MeliProxyApi
                 Description = BuildDescription([..v.Attributes, ..v.AttributesCombinations])
             }).OrderBy(v => v.Sku)]
         };
+    }
+
+    private static string? ResolveListedSku(MeliItem item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.SellerSku))
+            return item.SellerSku;
+
+        var fromAttribute = item.Attributes?
+            .FirstOrDefault(a => string.Equals(a.Id, MeliConstants.SellerSkuAttributeId, StringComparison.OrdinalIgnoreCase))
+            ?.ValueName;
+        if (!string.IsNullOrWhiteSpace(fromAttribute))
+            return fromAttribute;
+
+        return string.IsNullOrWhiteSpace(item.SellerCustomField) ? null : item.SellerCustomField;
     }
 
     private static string BuildDescription(List<MeliAttribute> attributes)
@@ -197,6 +268,21 @@ public class MeliProxyItemDto
 
     [JsonPropertyName("thumbnail")]
     public string? Thumbnail { get; set; }
+
+    [JsonPropertyName("family_id")]
+    public string? FamilyId { get; set; }
+
+    [JsonPropertyName("family_name")]
+    public string? FamilyName { get; set; }
+
+    [JsonPropertyName("user_product_id")]
+    public string? UserProductId { get; set; }
+
+    [JsonPropertyName("seller_sku")]
+    public string? SellerSku { get; set; }
+
+    [JsonPropertyName("shipping")]
+    public MeliShipping? Shipping { get; set; }
 }
 
 public class MeliProxyVariationDto

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using meli_znube_integration.Clients;
 using meli_znube_integration.Common;
 using meli_znube_integration.Models;
@@ -7,20 +8,16 @@ using Microsoft.Extensions.Logging;
 namespace meli_znube_integration.Services;
 
 /// <summary>
-/// Implements the "Hydration-First" pattern for MELI catalog (Family model) items.
-///
-/// Algorithm per item (only for catalog items where CatalogListing == true):
-///   1. Search siblings: GET /users/{sellerId}/items/search?catalog_product_id={id}
-///   2. Bulk-fetch sibling details.
-///   3. Per sibling, resolve SKU via item_relations → original marketplace item → variation → SELLER_SKU.
-///   4. Build synthetic MeliVariation for each sibling.
-///   5. Assign to item.Variations.
-///
-/// Design decisions: §D1 (hydration-first), §D2 (reuse MeliVariation), §D3 (filter by seller),
-/// §D4 (null SKU graceful — never abort). Spec: meli-catalog-hydrator.
+/// Hydrates an item into variations the editor can map.
+/// Legacy items (variations already present) are returned unchanged.
+/// User Products with an empty variations array are expanded through the family
+/// (<c>GET /sites/MLA/user-products-families/{family_id}</c>). A publication with no
+/// family becomes a single synthetic variation.
 /// </summary>
 public sealed class MeliCatalogHydrator : IMeliCatalogHydrator
 {
+    private static readonly Regex MlaIdRegex = new(@"^MLA(\d+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     private readonly IMeliApiClient _meliApiClient;
     private readonly ILogger<MeliCatalogHydrator> _logger;
 
@@ -33,143 +30,146 @@ public sealed class MeliCatalogHydrator : IMeliCatalogHydrator
     /// <inheritdoc />
     public async Task<MeliItem> HydrateAsync(MeliItem item, string sellerId, CancellationToken ct = default)
     {
-        // Task 3.8 — null guard
         ArgumentNullException.ThrowIfNull(item);
 
-        // Task 3.2 — guard: not a catalog item → return unchanged (no I/O)
-        if (!item.CatalogListing || string.IsNullOrWhiteSpace(item.CatalogProductId))
+        if (item.Variations is { Count: > 0 })
             return item;
 
-        _logger.LogDebug("Hydrating catalog item {ItemId} (CatalogProductId={CatalogProductId}).",
-            item.Id, item.CatalogProductId);
-
-        // Task 3.3 — search siblings by catalog_product_id for this seller
-        if (!long.TryParse(sellerId, out var sellerIdLong))
-        {
-            _logger.LogWarning("Invalid sellerId '{SellerId}' for catalog hydration of item {ItemId}.", sellerId, item.Id);
-            item.Variations = [];
-            return item;
-        }
-
-        MeliSearchResponseDto? searchResult = null;
         try
         {
-            searchResult = await _meliApiClient.SearchItemsAsync(
-                sellerIdLong,
-                new MeliItemSearchQuery { CatalogProductId = item.CatalogProductId, Status = "active" },
-                ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to search siblings for catalog item {ItemId}. Returning empty variations.", item.Id);
-            item.Variations = [];
-            return item;
-        }
-
-        var siblingIds = searchResult?.Results?
-            .Select(r => r.Id)
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Cast<string>()
-            .ToList() ?? [];
-
-        // Include the item itself if missing from the search results
-        if (!siblingIds.Any(id => string.Equals(id, item.Id, StringComparison.OrdinalIgnoreCase)))
-            siblingIds.Add(item.Id);
-
-        if (siblingIds.Count == 0)
-        {
-            item.Variations = [];
-            return item;
-        }
-
-        // Task 3.4 — bulk-fetch sibling details
-        List<MeliItem> siblings;
-        try
-        {
-            siblings = await _meliApiClient.GetItemsAsync(siblingIds, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to fetch siblings for catalog item {ItemId}. Returning empty variations.", item.Id);
-            item.Variations = [];
-            return item;
-        }
-
-        if (siblings.Count == 0)
-        {
-            item.Variations = [];
-            return item;
-        }
-
-        // Task 3.5 — resolve SKU per sibling via item_relations
-        // Cache original marketplace items to avoid repeated fetches for the same source item.
-        var originalItemCache = new Dictionary<string, MeliItem?>(StringComparer.OrdinalIgnoreCase);
-
-        // Task 3.6 + 3.7 — build synthetic MeliVariation list and assign
-        var syntheticVariations = new List<MeliVariation>(siblings.Count);
-
-        foreach (var sibling in siblings)
-        {
-            var relation = sibling.ItemRelations?.FirstOrDefault();
-            string? resolvedSku = null;
-            long variationId = 0L;
-
-            if (relation != null && relation.VariationId.HasValue)
+            var familyId = await ResolveFamilyIdAsync(item, ct);
+            if (!string.IsNullOrWhiteSpace(familyId))
             {
-                variationId = relation.VariationId.Value;
-                var originalItemId = relation.Id;
-
-                if (!string.IsNullOrWhiteSpace(originalItemId))
+                if (!long.TryParse(sellerId, out var sellerIdLong))
                 {
-                    if (!originalItemCache.TryGetValue(originalItemId, out var originalItem))
+                    _logger.LogWarning("Invalid sellerId '{SellerId}' for family hydration of item {ItemId}.", sellerId, item.Id);
+                }
+                else
+                {
+                    var siblings = await LoadFamilySiblingsAsync(item, familyId, sellerIdLong, ct);
+                    if (siblings.Count > 0)
                     {
-                        try
-                        {
-                            var fetched = await _meliApiClient.GetItemsAsync([originalItemId], ct);
-                            originalItem = fetched?.FirstOrDefault();
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Failed to fetch original item {OriginalId} for catalog sibling {SiblingId}. SKU will be null.", originalItemId, sibling.Id);
-                            originalItem = null;
-                        }
-                        originalItemCache[originalItemId] = originalItem;
-                    }
-
-                    if (originalItem != null)
-                    {
-                        var originalVariation = originalItem.Variations
-                            .FirstOrDefault(v => v.Id == variationId);
-                        resolvedSku = originalVariation?.SellerSku; // computed property reads SELLER_SKU attribute
+                        item.Variations = siblings.Select(BuildSiblingVariation).ToList();
+                        return item;
                     }
                 }
             }
-            else
-            {
-                // Task 3.5 / D4 — auto-optin items may have no item_relations → SKU = null, do not abort
-                _logger.LogDebug("Sibling {SiblingId} has no item_relations or VariationId. SellerSku will be null.", sibling.Id);
-            }
-
-            // Build synthetic MeliVariation — Branch A of MeliItemNormalizer handles this transparently.
-            syntheticVariations.Add(new MeliVariation
-            {
-                Id = variationId,
-                UserProductId = sibling.UserProductId ?? sibling.Id,
-                Attributes =
-                [
-                    new MeliAttribute
-                    {
-                        Id = MeliConstants.SellerSkuAttributeId,   // "SELLER_SKU"
-                        ValueName = resolvedSku
-                    }
-                ],
-                AvailableQuantity = 0   // overwritten by StockSyncSourceService with Znube data
-            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to hydrate user-product family for item {ItemId}. Falling back to a single variation.", item.Id);
         }
 
-        item.Variations = syntheticVariations;
-
-        _logger.LogDebug("Hydrated catalog item {ItemId}: {Count} synthetic variation(s).", item.Id, syntheticVariations.Count);
+        item.Variations = [BuildAlwaysOne(item)];
         return item;
+    }
+
+    private async Task<string?> ResolveFamilyIdAsync(MeliItem item, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(item.FamilyId))
+            return item.FamilyId;
+
+        if (string.IsNullOrWhiteSpace(item.UserProductId))
+            return null;
+
+        var userProduct = await _meliApiClient.GetUserProductAsync(item.UserProductId, ct);
+        if (string.IsNullOrWhiteSpace(userProduct?.FamilyId))
+            return null;
+
+        item.FamilyId = userProduct.FamilyId;
+        return item.FamilyId;
+    }
+
+    private async Task<List<MeliItem>> LoadFamilySiblingsAsync(MeliItem item, string familyId, long sellerId, CancellationToken ct)
+    {
+        var userProductIds = await _meliApiClient.GetUserProductFamilyAsync(familyId, ct);
+        if (userProductIds.Count == 0)
+            return [];
+
+        var search = await _meliApiClient.SearchItemsAsync(
+            sellerId,
+            new MeliItemSearchQuery
+            {
+                UserProductId = string.Join(",", userProductIds),
+                Status = "active"
+            },
+            ct);
+
+        var siblingIds = search?.Results?
+            .Select(r => r.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? [];
+
+        if (!string.IsNullOrWhiteSpace(item.Id)
+            && !siblingIds.Any(id => string.Equals(id, item.Id, StringComparison.OrdinalIgnoreCase)))
+        {
+            siblingIds.Add(item.Id);
+        }
+
+        if (siblingIds.Count == 0)
+            return [];
+
+        return await _meliApiClient.GetItemsAsync(siblingIds, ct) ?? [];
+    }
+
+    private static MeliVariation BuildSiblingVariation(MeliItem sibling)
+    {
+        var attributes = CopyAttributes(sibling.Attributes);
+        EnsureSellerSku(attributes, sibling.SellerSku, sibling.SellerCustomField);
+        return new MeliVariation
+        {
+            Id = ParseMlaNumericId(sibling.Id),
+            UserProductId = sibling.UserProductId ?? string.Empty,
+            AvailableQuantity = sibling.AvailableQuantity,
+            Attributes = attributes
+        };
+    }
+
+    private static MeliVariation BuildAlwaysOne(MeliItem item)
+    {
+        var attributes = CopyAttributes(item.Attributes);
+        EnsureSellerSku(attributes, item.SellerSku, item.SellerCustomField);
+        return new MeliVariation
+        {
+            Id = 0,
+            UserProductId = string.IsNullOrWhiteSpace(item.UserProductId) ? item.Id : item.UserProductId,
+            AvailableQuantity = item.AvailableQuantity,
+            Attributes = attributes
+        };
+    }
+
+    private static List<MeliAttribute> CopyAttributes(List<MeliAttribute>? source)
+    {
+        if (source == null || source.Count == 0) return [];
+        return source.Select(a => new MeliAttribute { Id = a.Id, ValueName = a.ValueName }).ToList();
+    }
+
+    private static void EnsureSellerSku(List<MeliAttribute> attributes, string? sellerSku, string? sellerCustomField)
+    {
+        var hasSku = attributes.Any(a =>
+            string.Equals(a.Id, MeliConstants.SellerSkuAttributeId, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(a.ValueName));
+        if (hasSku) return;
+
+        var sku = !string.IsNullOrWhiteSpace(sellerSku) ? sellerSku
+            : !string.IsNullOrWhiteSpace(sellerCustomField) ? sellerCustomField
+            : null;
+        if (sku == null) return;
+
+        attributes.Add(new MeliAttribute
+        {
+            Id = MeliConstants.SellerSkuAttributeId,
+            ValueName = sku
+        });
+    }
+
+    private static long ParseMlaNumericId(string? itemId)
+    {
+        if (string.IsNullOrWhiteSpace(itemId)) return 0;
+        var match = MlaIdRegex.Match(itemId.Trim());
+        if (!match.Success) return 0;
+        return long.TryParse(match.Groups[1].Value, out var id) ? id : 0;
     }
 }

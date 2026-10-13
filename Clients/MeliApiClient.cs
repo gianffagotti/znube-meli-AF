@@ -8,6 +8,10 @@ namespace meli_znube_integration.Clients;
 
 public class MeliApiClient : IMeliApiClient
 {
+    private const int MultigetBatchSize = 20;
+    private const int UserProductIdBatchSize = 20;
+    private const int MaxSearchResultIds = 500;
+
     private readonly IHttpClientFactory _httpClientFactory;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -139,29 +143,65 @@ public class MeliApiClient : IMeliApiClient
 
     public async Task<List<MeliItem>> GetItemsAsync(IEnumerable<string> ids, CancellationToken cancellationToken = default)
     {
-        var idList = ids.ToList();
-        if (idList.Count == 0) return new List<MeliItem>();
+        var idList = ids
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (idList.Count == 0) return [];
+
+        var items = new List<MeliItem>();
+        foreach (var chunk in idList.Chunk(MultigetBatchSize))
+            items.AddRange(await GetItemsBatchAsync(chunk, cancellationToken));
+        return items;
+    }
+
+    private async Task<List<MeliItem>> GetItemsBatchAsync(IEnumerable<string> ids, CancellationToken cancellationToken)
+    {
         var client = GetClient();
-        var idsParam = string.Join(",", idList);
-        // Includes catalog fields (catalog_listing, catalog_product_id, item_relations) for Families support. Spec: meli-catalog-dto-extensions.
-        var url = $"items?ids={idsParam}&include_attributes=all&attributes=id,user_product_id,shipping,variations,seller_custom_field,attributes,title,price,thumbnail,permalink,catalog_listing,catalog_product_id,item_relations,available_quantity";
+        var idsParam = string.Join(",", ids);
+        var url = "items?ids=" + idsParam
+            + "&include_attributes=all&attributes=id,user_product_id,family_id,family_name,shipping,variations,seller_custom_field,seller_sku,attributes,title,price,thumbnail,permalink,catalog_listing,catalog_product_id,item_relations,available_quantity";
         using var res = await client.GetAsync(url, cancellationToken);
-        if (!res.IsSuccessStatusCode) return new List<MeliItem>();
+        if (!res.IsSuccessStatusCode) return [];
         var json = await res.Content.ReadAsStringAsync(cancellationToken);
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
         var items = new List<MeliItem>();
-        if (root.ValueKind == JsonValueKind.Array)
+        if (root.ValueKind != JsonValueKind.Array) return items;
+
+        foreach (var entry in root.EnumerateArray())
         {
-            foreach (var entry in root.EnumerateArray())
-            {
-                if (!entry.TryGetProperty("body", out var body) || body.ValueKind != JsonValueKind.Object) continue;
-                if (body.TryGetProperty("error", out _)) continue;
-                var item = JsonSerializer.Deserialize<MeliItem>(body.GetRawText(), JsonOptions);
-                if (item != null) items.Add(item);
-            }
+            if (!entry.TryGetProperty("body", out var body) || body.ValueKind != JsonValueKind.Object) continue;
+            if (body.TryGetProperty("error", out _)) continue;
+            var item = JsonSerializer.Deserialize<MeliItem>(body.GetRawText(), JsonOptions);
+            if (item != null) items.Add(item);
         }
         return items;
+    }
+
+    public async Task<IReadOnlyList<string>> GetUserProductFamilyAsync(string familyId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(familyId)) return [];
+        var client = GetClient();
+        using var res = await client.GetAsync($"sites/MLA/user-products-families/{Uri.EscapeDataString(familyId)}", cancellationToken);
+        if (!res.IsSuccessStatusCode) return [];
+        var json = await res.Content.ReadAsStringAsync(cancellationToken);
+        var dto = JsonSerializer.Deserialize<MeliUserProductFamilyDto>(json, JsonOptions);
+        return dto?.UserProductsIds?
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList()
+            ?? [];
+    }
+
+    public async Task<MeliUserProductDto?> GetUserProductAsync(string userProductId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(userProductId)) return null;
+        var client = GetClient();
+        using var res = await client.GetAsync($"user-products/{Uri.EscapeDataString(userProductId)}", cancellationToken);
+        if (!res.IsSuccessStatusCode) return null;
+        var json = await res.Content.ReadAsStringAsync(cancellationToken);
+        return JsonSerializer.Deserialize<MeliUserProductDto>(json, JsonOptions);
     }
 
     public async Task<(int Quantity, string Version)?> GetUserProductStockAsync(string userProductId, CancellationToken cancellationToken = default)
@@ -202,18 +242,86 @@ public class MeliApiClient : IMeliApiClient
 
     public async Task<MeliSearchResponseDto?> SearchItemsAsync(long sellerId, MeliItemSearchQuery query, CancellationToken cancellationToken = default)
     {
+        var userProductIds = SplitUserProductIds(query?.UserProductId);
+        if (userProductIds.Count == 0)
+            return await SearchItemsPageAsync(sellerId, query, userProductIdParam: null, offset: 0, cancellationToken);
+
+        var merged = new List<MeliSearchResultDto>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var anyPage = false;
+
+        foreach (var chunk in userProductIds.Chunk(UserProductIdBatchSize))
+        {
+            var param = string.Join(",", chunk.Select(Uri.EscapeDataString));
+            var offset = 0;
+            while (merged.Count < MaxSearchResultIds)
+            {
+                var page = await SearchItemsPageAsync(sellerId, query, param, offset, cancellationToken);
+                if (page == null)
+                    return anyPage ? MergeSearchResults(merged) : null;
+
+                anyPage = true;
+                var pageResults = page.Results ?? [];
+                foreach (var row in pageResults)
+                {
+                    if (string.IsNullOrWhiteSpace(row.Id) || !seen.Add(row.Id)) continue;
+                    merged.Add(row);
+                    if (merged.Count >= MaxSearchResultIds) break;
+                }
+
+                if (pageResults.Count == 0 || merged.Count >= MaxSearchResultIds) break;
+
+                var total = page.Paging?.Total ?? pageResults.Count;
+                var limit = page.Paging?.Limit > 0 ? page.Paging.Limit : pageResults.Count;
+                offset += limit;
+                if (offset >= total || pageResults.Count < limit) break;
+            }
+
+            if (merged.Count >= MaxSearchResultIds) break;
+        }
+
+        return MergeSearchResults(merged);
+    }
+
+    private async Task<MeliSearchResponseDto?> SearchItemsPageAsync(
+        long sellerId,
+        MeliItemSearchQuery? query,
+        string? userProductIdParam,
+        int offset,
+        CancellationToken cancellationToken)
+    {
         var client = GetClient();
-        var q = query?.Status ?? "active";
-        var parts = new List<string> { "status=" + Uri.EscapeDataString(q) };
+        var status = query?.Status ?? "active";
+        var parts = new List<string> { "status=" + Uri.EscapeDataString(status) };
         if (!string.IsNullOrWhiteSpace(query?.Query)) parts.Add("q=" + Uri.EscapeDataString(query.Query));
         if (!string.IsNullOrWhiteSpace(query?.SellerSku)) parts.Add("seller_sku=" + Uri.EscapeDataString(query.SellerSku));
-        if (!string.IsNullOrWhiteSpace(query?.UserProductId)) parts.Add("user_product_id=" + Uri.EscapeDataString(query.UserProductId));
+        if (!string.IsNullOrWhiteSpace(userProductIdParam))
+            parts.Add("user_product_id=" + userProductIdParam);
         if (!string.IsNullOrWhiteSpace(query?.CatalogProductId)) parts.Add("catalog_product_id=" + Uri.EscapeDataString(query.CatalogProductId));
-        var queryString = string.Join("&", parts);
-        var url = $"users/{sellerId}/items/search?{queryString}";
+        if (offset > 0) parts.Add("offset=" + offset.ToString());
+
+        var url = $"users/{sellerId}/items/search?{string.Join("&", parts)}";
         using var res = await client.GetAsync(url, cancellationToken);
         if (!res.IsSuccessStatusCode) return null;
         var json = await res.Content.ReadAsStringAsync(cancellationToken);
         return JsonSerializer.Deserialize<MeliSearchResponseDto>(json, JsonOptions);
+    }
+
+    private static List<string> SplitUserProductIds(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return [];
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(id => id.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static MeliSearchResponseDto MergeSearchResults(List<MeliSearchResultDto> results)
+    {
+        return new MeliSearchResponseDto
+        {
+            Results = results,
+            Paging = new MeliPagingDto { Total = results.Count, Limit = results.Count, Offset = 0 }
+        };
     }
 }

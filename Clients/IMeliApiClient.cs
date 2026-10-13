@@ -15,6 +15,10 @@ public interface IMeliApiClient
     Task<bool> SendMessageAsync(string packOrOrderId, string text, string optionId = MeliConstants.MessageOptionIdOther, CancellationToken cancellationToken = default);
     Task<MeliScanResponseDto?> ScanItemsAsync(long userId, string? scrollId, CancellationToken cancellationToken = default);
     Task<List<MeliItem>> GetItemsAsync(IEnumerable<string> ids, CancellationToken cancellationToken = default);
+    /// <summary>GET /sites/MLA/user-products-families/{familyId}. Returns user_products_ids, or empty when missing.</summary>
+    Task<IReadOnlyList<string>> GetUserProductFamilyAsync(string familyId, CancellationToken cancellationToken = default);
+    /// <summary>GET /user-products/{userProductId}. Null when the resource is missing.</summary>
+    Task<MeliUserProductDto?> GetUserProductAsync(string userProductId, CancellationToken cancellationToken = default);
     Task<(int Quantity, string Version)?> GetUserProductStockAsync(string userProductId, CancellationToken cancellationToken = default);
     /// <summary>Returns full stock response with locations. Used for hybrid (selling_address) check. Spec 03.</summary>
     Task<MeliUserProductStockResponseDto?> GetUserProductStockResponseAsync(string userProductId, CancellationToken cancellationToken = default);

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using meli_znube_integration.Models.Dtos;
 
 namespace meli_znube_integration.Models;
 
@@ -9,6 +10,14 @@ public class MeliItem
 
     [JsonPropertyName("user_product_id")]
     public string UserProductId { get; set; } = string.Empty;
+
+    /// <summary>User Products family id. MELI may send a number larger than Int64.</summary>
+    [JsonPropertyName("family_id")]
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
+    public string? FamilyId { get; set; }
+
+    [JsonPropertyName("family_name")]
+    public string? FamilyName { get; set; }
 
     [JsonPropertyName("seller_custom_field")]
     public string? SellerCustomField { get; set; }

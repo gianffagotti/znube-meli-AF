@@ -13,7 +13,7 @@ public class JsonStringFromNumberConverter : JsonConverter<string?>
     {
         return reader.TokenType switch
         {
-            JsonTokenType.Number => reader.TryGetInt64(out var l) ? l.ToString() : Encoding.UTF8.GetString(reader.ValueSpan),
+            JsonTokenType.Number => ReadNumber(ref reader),
             JsonTokenType.String => reader.GetString(),
             JsonTokenType.Null => null,
             _ => throw new JsonException($"Unexpected token {reader.TokenType} when parsing string.")
@@ -26,6 +26,13 @@ public class JsonStringFromNumberConverter : JsonConverter<string?>
             writer.WriteNullValue();
         else
             writer.WriteStringValue(value);
+    }
+
+    private static string ReadNumber(ref Utf8JsonReader reader)
+    {
+        if (reader.TryGetInt64(out var signed)) return signed.ToString();
+        if (reader.TryGetUInt64(out var unsigned)) return unsigned.ToString();
+        return Encoding.UTF8.GetString(reader.ValueSpan);
     }
 }
 
@@ -244,8 +251,34 @@ public class MeliItemSearchQuery
     public string? SellerSku { get; set; }
     [JsonPropertyName("user_product_id")]
     public string? UserProductId { get; set; }
-    /// <summary>Filter by catalog product ID (family). Used by MeliCatalogHydrator to find sibling items.</summary>
+    /// <summary>Catalog listing product id. Not a User Products family_id.</summary>
     [JsonPropertyName("catalog_product_id")]
     public string? CatalogProductId { get; set; }
     public string? Status { get; set; } = "active";
+}
+
+public class MeliUserProductFamilyDto
+{
+    [JsonPropertyName("user_products_ids")]
+    public List<string> UserProductsIds { get; set; } = [];
+
+    [JsonPropertyName("family_id")]
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
+    public string? FamilyId { get; set; }
+
+    [JsonPropertyName("site_id")]
+    public string? SiteId { get; set; }
+
+    [JsonPropertyName("user_id")]
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
+    public string? UserId { get; set; }
+}
+
+public class MeliUserProductDto
+{
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("family_id")]
+    [JsonConverter(typeof(JsonStringFromNumberConverter))]
+    public string? FamilyId { get; set; }
 }
