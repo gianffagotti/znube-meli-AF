@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace meli_znube_integration.Services;
 
-public class StockRuleService
+public class StockRuleService : IStockRuleLookup
 {
     private readonly TableClient _tableClient;
     private readonly TableClient _skuIndexClient;

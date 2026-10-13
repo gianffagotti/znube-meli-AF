@@ -10,7 +10,6 @@ namespace meli_znube_integration.Services;
 public class OrderItemExpander : IOrderItemExpander
 {
     private readonly IZnubeApiClient _znubeApiClient;
-    private readonly IMeliApiClient _meliApiClient;
     private readonly IOrderItemRuleResolver _ruleResolver;
     private readonly IMeliItemNormalizer _meliItemNormalizer;
     private readonly IMeliCatalogHydrator _catalogHydrator;
@@ -18,14 +17,12 @@ public class OrderItemExpander : IOrderItemExpander
 
     public OrderItemExpander(
         IZnubeApiClient znubeApiClient,
-        IMeliApiClient meliApiClient,
         IOrderItemRuleResolver ruleResolver,
         IMeliItemNormalizer meliItemNormalizer,
         IMeliCatalogHydrator catalogHydrator,
         ILogger<OrderItemExpander> logger)
     {
         _znubeApiClient = znubeApiClient;
-        _meliApiClient = meliApiClient;
         _ruleResolver = ruleResolver;
         _meliItemNormalizer = meliItemNormalizer;
         _catalogHydrator = catalogHydrator;
@@ -97,9 +94,11 @@ public class OrderItemExpander : IOrderItemExpander
                 continue;
             }
 
+            var orderVariantId = await ResolveOrderVariantIdAsync(item, cancellationToken);
+
             if (string.Equals(rule.RuleType, StockRuleTypes.Pack, StringComparison.OrdinalIgnoreCase))
             {
-                var mapping = ResolveMapping(rule, item);
+                var mapping = ResolveMapping(rule, orderVariantId);
                 if (mapping == null)
                 {
                     _logger.LogInformation("No hay mapping para ItemId {ItemId}. Marcando item sin asignacion.", item.ItemId);
@@ -147,7 +146,7 @@ public class OrderItemExpander : IOrderItemExpander
 
             if (string.Equals(rule.RuleType, StockRuleTypes.Combo, StringComparison.OrdinalIgnoreCase))
             {
-                var mapping = ResolveMapping(rule, item);
+                var mapping = ResolveMapping(rule, orderVariantId);
                 List<RuleSourceMatchDto>? matches = null;
                 if (mapping != null && mapping.SourceMatches != null && mapping.SourceMatches.Count > 0)
                     matches = mapping.SourceMatches;
@@ -215,16 +214,10 @@ public class OrderItemExpander : IOrderItemExpander
         if (string.IsNullOrWhiteSpace(sellerId))
             return null;
 
-        var resolvedSourceItemId = await ResolveItemIdAsync(sourceItemId!, sellerId, cancellationToken);
-        if (string.IsNullOrWhiteSpace(resolvedSourceItemId))
-            return null;
-
-        var sourceItems = await _meliApiClient.GetItemsAsync(new[] { resolvedSourceItemId! }, cancellationToken);
-        var sourceItem = sourceItems?.FirstOrDefault();
+        var sourceItem = await _catalogHydrator.FetchAndHydrateByIdAsync(sourceItemId!, sellerId!, cancellationToken);
         if (sourceItem == null)
             return null;
 
-        sourceItem = await _catalogHydrator.HydrateAsync(sourceItem, sellerId!, cancellationToken);
         var canonicalSource = _meliItemNormalizer.Normalize(sourceItem);
         var seedSku = canonicalSource.Variations.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v.SellerSku))?.SellerSku
                       ?? canonicalSource.SellerSku;
@@ -329,7 +322,7 @@ public class OrderItemExpander : IOrderItemExpander
                 ProductLabel = kvp.Key,
                 OrderItemId = item.ItemId,
                 RuleType = StockRuleTypes.Pack,
-                SourceItemId = resolvedSourceItemId
+                SourceItemId = sourceItemId
             });
         }
 
@@ -369,14 +362,37 @@ public class OrderItemExpander : IOrderItemExpander
         public int TotalQty { get; set; }
     }
 
-    private static VariantMappingDto? ResolveMapping(StockRuleDto rule, MeliOrderItem item)
+    private static VariantMappingDto? ResolveMapping(StockRuleDto rule, string? variantId)
     {
         if (rule.Mappings == null || rule.Mappings.Count == 0) return null;
-        var targetSku = item.UserProductId ?? item.SellerSku;
-        if (!string.IsNullOrWhiteSpace(targetSku))
-            return rule.Mappings.FirstOrDefault(m => string.Equals(m.TargetVariantId, targetSku, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(variantId))
+            return rule.Mappings.FirstOrDefault(m => string.Equals(m.TargetVariantId, variantId, StringComparison.OrdinalIgnoreCase));
 
         return rule.Mappings.Count == 1 ? rule.Mappings[0] : null;
+    }
+
+    private async Task<string?> ResolveOrderVariantIdAsync(MeliOrderItem item, CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(item.UserProductId))
+            return item.UserProductId;
+        if (string.IsNullOrWhiteSpace(item.ItemId))
+            return null;
+
+        var sellerId = EnvVars.GetString(EnvVars.Keys.MeliSellerId);
+        if (string.IsNullOrWhiteSpace(sellerId))
+            return null;
+
+        var hydrated = await _catalogHydrator.FetchAndHydrateByIdAsync(item.ItemId, sellerId, cancellationToken);
+        if (hydrated == null)
+            return null;
+
+        var numeric = MeliItemIdClassifier.ParseMlaNumericId(item.ItemId);
+        var variation = hydrated.Variations.FirstOrDefault(v => numeric > 0 && v.Id == numeric);
+        if (variation == null)
+            return null;
+        if (!string.IsNullOrWhiteSpace(variation.UserProductId))
+            return variation.UserProductId;
+        return variation.Id > 0 ? variation.Id.ToString() : null;
     }
 
     private async Task<List<RuleSourceMatchDto>?> BuildComboFallbackMatchesAsync(StockRuleDto rule, CancellationToken cancellationToken)
@@ -388,39 +404,27 @@ public class OrderItemExpander : IOrderItemExpander
         if (string.IsNullOrWhiteSpace(sellerId))
             return null;
 
-        var resolvedIds = new List<string>();
-        var componentByResolvedId = new Dictionary<string, RuleComponentDto>(StringComparer.OrdinalIgnoreCase);
-
+        var matches = new List<RuleSourceMatchDto>();
         foreach (var component in rule.Components)
         {
-            var resolvedId = await ResolveItemIdAsync(component.SourceItemId, sellerId, cancellationToken);
-            if (string.IsNullOrWhiteSpace(resolvedId))
+            if (string.IsNullOrWhiteSpace(component.SourceItemId))
                 return null;
 
-            resolvedIds.Add(resolvedId!);
-            componentByResolvedId[resolvedId!] = component;
-        }
+            var item = await _catalogHydrator.FetchAndHydrateByIdAsync(component.SourceItemId, sellerId!, cancellationToken);
+            if (item == null)
+                return null;
 
-        var items = await _meliApiClient.GetItemsAsync(resolvedIds, cancellationToken);
-        if (items == null || items.Count == 0)
-            return null;
-
-        var matches = new List<RuleSourceMatchDto>();
-        foreach (var resolvedId in resolvedIds)
-        {
-            var item = items.FirstOrDefault(i => string.Equals(i.Id, resolvedId, StringComparison.OrdinalIgnoreCase));
-            if (item == null) return null;
-            item = await _catalogHydrator.HydrateAsync(item, sellerId!, cancellationToken);
             var canonicalItem = _meliItemNormalizer.Normalize(item);
-            if (canonicalItem.Variations.Count != 1) return null;
+            if (canonicalItem.Variations.Count != 1)
+                return null;
 
             var singleVar = canonicalItem.Variations[0];
-            if (string.IsNullOrWhiteSpace(singleVar.SellerSku)) return null;
+            if (string.IsNullOrWhiteSpace(singleVar.SellerSku))
+                return null;
 
-            var component = componentByResolvedId[resolvedId];
             matches.Add(new RuleSourceMatchDto
             {
-                SourceItemId = item.Id,
+                SourceItemId = component.SourceItemId,
                 SourceVariantId = singleVar.VariantId,
                 SourceSku = singleVar.SellerSku!,
                 Quantity = component.Quantity
@@ -428,15 +432,5 @@ public class OrderItemExpander : IOrderItemExpander
         }
 
         return matches;
-    }
-
-    private async Task<string?> ResolveItemIdAsync(string sourceItemId, string sellerId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(sourceItemId)) return null;
-        if (sourceItemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
-            return sourceItemId;
-
-        var search = await _meliApiClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = sourceItemId }, cancellationToken);
-        return search?.Results?.FirstOrDefault()?.Id;
     }
 }

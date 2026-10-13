@@ -64,8 +64,7 @@ public class StockSyncWorker
         _logger.LogInformation("Loaded {Count} rules.", rules.Count);
 
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = 1 };
-        var sellerId = long.Parse(EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId));
-        var sellerIdStr = sellerId.ToString(); // used for HydrateAsync
+        var sellerIdStr = EnvVars.GetRequiredString(EnvVars.Keys.MeliSellerId);
 
         await Parallel.ForEachAsync(rules, parallelOptions, async (rule, ct) =>
         {
@@ -97,36 +96,21 @@ public class StockSyncWorker
                         return;
                     }
 
-                    var rawSourceItems = new List<MeliItem>();
+                    var sourceList = new List<CanonicalItem>();
                     foreach (var comp in components)
                     {
-                        string itemId = comp.SourceItemId;
-                        if (!itemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
-                        {
-                            var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = comp.SourceItemId });
-                            var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
-                            if (!string.IsNullOrWhiteSpace(resolvedId)) itemId = resolvedId;
-                        }
-                        if (!string.IsNullOrWhiteSpace(itemId))
-                        {
-                            var items = await _meliClient.GetItemsAsync(new[] { itemId });
-                            if (items != null && items.Count > 0) rawSourceItems.AddRange(items);
-                        }
+                        if (string.IsNullOrWhiteSpace(comp.SourceItemId)) continue;
+                        var hydrated = await _hydrator.FetchAndHydrateByIdAsync(comp.SourceItemId, sellerIdStr, ct);
+                        if (hydrated != null)
+                            sourceList.Add(_normalizer.Normalize(hydrated));
                     }
 
-                    if (rawSourceItems.Count == 0)
+                    if (sourceList.Count == 0)
                     {
                         _logger.LogWarning("Could not fetch source items for Target {TargetItemId}. Skipping.", targetItemId);
                         return;
                     }
 
-                    // Hydrate → Normalize each source item
-                    var sourceList = new List<CanonicalItem>(rawSourceItems.Count);
-                    foreach (var raw in rawSourceItems)
-                    {
-                        var hydrated = await _hydrator.HydrateAsync(raw, sellerIdStr, ct);
-                        sourceList.Add(_normalizer.Normalize(hydrated));
-                    }
                     canonicalSourceItems = sourceList;
                 }
 
@@ -134,27 +118,18 @@ public class StockSyncWorker
                 var enrichedSourceItems = await _stockSyncSourceService.EnrichSourceItemsWithZnubeStockAsync(
                     canonicalSourceItems, rule.RuleType, fromWorker: true, ct);
 
-                // Fetch and normalize target item
-                string finalTargetItemId = targetItemId;
-                if (!finalTargetItemId.StartsWith(MeliConstants.ItemIdPrefixMla, StringComparison.OrdinalIgnoreCase))
-                {
-                    var upSearch = await _meliClient.SearchItemsAsync(sellerId, new MeliItemSearchQuery { UserProductId = finalTargetItemId });
-                    var resolvedId = upSearch?.Results?.FirstOrDefault()?.Id;
-                    if (!string.IsNullOrWhiteSpace(resolvedId)) finalTargetItemId = resolvedId;
-                }
-
-                var targetItems = await _meliClient.GetItemsAsync(new[] { finalTargetItemId });
-                var rawTargetItem = targetItems?.FirstOrDefault();
-                if (rawTargetItem == null)
+                var hydratedTarget = await _hydrator.FetchAndHydrateByIdAsync(targetItemId, sellerIdStr, ct);
+                if (hydratedTarget == null)
                 {
                     _logger.LogWarning("Could not fetch Target Item {TargetItemId}. Skipping.", targetItemId);
                     return;
                 }
 
-                var hydratedTarget = await _hydrator.HydrateAsync(rawTargetItem, sellerIdStr, ct);
                 var targetCanonical = _normalizer.Normalize(hydratedTarget);
+                var familyContainer = MeliItemIdClassifier.IsFamilyContainer(targetCanonical.Id);
+                var finalTargetItemId = targetCanonical.Id;
 
-                if (await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetCanonical, ct))
+                if (!familyContainer && await _stockSyncSourceService.ShouldSkipFulfillmentTargetAsync(targetCanonical, ct))
                 {
                     _logger.LogInformation("Skipping FULL-only item {TargetItemId} (no selling_address).", targetItemId);
                     return;
@@ -178,6 +153,14 @@ public class StockSyncWorker
 
                 foreach (var update in updates)
                 {
+                    if (familyContainer)
+                    {
+                        var variant = targetCanonical.Variations.FirstOrDefault(v =>
+                            string.Equals(v.VariantId, update.TargetVariantId, StringComparison.OrdinalIgnoreCase));
+                        if (await _stockSyncSourceService.ShouldSkipFulfillmentVariantAsync(variant?.LogisticType, update.TargetVariantId, ct))
+                            continue;
+                    }
+
                     var currentStock = await _meliClient.GetUserProductStockAsync(update.TargetVariantId);
                     if (currentStock != null && currentStock.Value.Quantity != update.NewQuantity)
                     {

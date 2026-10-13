@@ -116,6 +116,10 @@ public class MeliVariation
 
     [JsonPropertyName("available_quantity")]
     public int AvailableQuantity { get; set; }
+
+    /// <summary>Sibling shipping logistic type. Not part of the MELI variation payload.</summary>
+    [JsonIgnore]
+    public string? LogisticType { get; set; }
 }
 
 public class MeliScanResponse

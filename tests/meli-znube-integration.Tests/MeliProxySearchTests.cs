@@ -82,19 +82,105 @@ public class MeliProxySearchTests : IDisposable
             {
                 Results = [new MeliSearchResultDto { Id = "MLA1" }, new MeliSearchResultDto { Id = "MLA2" }]
             },
-            OnItems = _ => [Item("MLA1", "Remera roja M"), Item("MLA2", "Remera azul L")]
+            OnItems = _ =>
+            [
+                Item("MLA1", "Remera roja M", "4270357590777233"),
+                Item("MLA2", "Remera azul L", "4270357590777233")
+            ]
         };
 
         var results = await Search(api, "#4270357590777233");
 
-        Assert.Equal(["4270357590777233"], api.FamilyRequests);
-        Assert.Equal("MLAU1,MLAU2", api.Searches.Single().UserProductId);
-        Assert.Null(api.Searches.Single().CatalogProductId);
+        Assert.Contains(api.FamilyRequests, id => id == "4270357590777233");
+        Assert.Contains(api.Searches, q => q.UserProductId == "MLAU1,MLAU2" && q.CatalogProductId == null);
+        var family = Assert.Single(results!);
+        Assert.Equal("4270357590777233", family.Id);
+        Assert.Equal("Remera dry fit", family.Title);
+        Assert.Equal("4270357590777233", family.FamilyId);
+        Assert.Equal(2, family.Variations.Count);
+        Assert.All(family.Variations, v => Assert.False(string.IsNullOrWhiteSpace(v.UserProductId)));
+        Assert.Contains(family.Variations, v => v.UserProductId == "MLAU1");
+        Assert.Contains(family.Variations, v => v.UserProductId == "MLAU2");
+    }
+
+    [Fact]
+    public async Task FreeText_CollapsesFamilySiblingsAndKeepsLegacy()
+    {
+        var api = new FakeMeliApiClient
+        {
+            OnSearch = q => q.UserProductId != null
+                ? new MeliSearchResponseDto
+                {
+                    Results = [new MeliSearchResultDto { Id = "MLA1" }, new MeliSearchResultDto { Id = "MLA2" }]
+                }
+                : new MeliSearchResponseDto
+                {
+                    Results =
+                    [
+                        new MeliSearchResultDto { Id = "MLA-LEGACY" },
+                        new MeliSearchResultDto { Id = "MLA1" },
+                        new MeliSearchResultDto { Id = "MLA2" }
+                    ]
+                },
+            OnFamily = _ => ["MLAU1", "MLAU2"],
+            OnItems = ids => ids.Select(id => id == "MLA-LEGACY"
+                ? Item(id, "Media")
+                : Item(id, id, "4270357590777233")).ToList()
+        };
+
+        var results = await Search(api, "remera");
+
         Assert.Equal(2, results!.Count);
-        Assert.All(results, dto => Assert.Equal("Remera dry fit", dto.FamilyName));
-        Assert.All(results, dto => Assert.Equal("4270357590777233", dto.FamilyId));
-        Assert.Contains(results, dto => dto.Title == "Remera roja M" && dto.SellerSku == "ABC#ROJO#M" && dto.Shipping!.LogisticType == "fulfillment");
-        Assert.Contains(results, dto => dto.Title == "Remera azul L" && dto.Shipping!.LogisticType == "self_service");
+        Assert.Contains(results, dto => dto.Id == "MLA-LEGACY");
+        Assert.Contains(results, dto => dto.Id == "4270357590777233" && dto.Variations.Count == 2);
+    }
+
+    [Fact]
+    public async Task GetItem_FamilyIdAndSiblingMla_ReturnTheSameContainer()
+    {
+        var api = new FakeMeliApiClient
+        {
+            OnFamily = _ => ["MLAU1", "MLAU2"],
+            OnSearch = _ => new MeliSearchResponseDto
+            {
+                Results = [new MeliSearchResultDto { Id = "MLA1" }, new MeliSearchResultDto { Id = "MLA2" }]
+            },
+            OnItems = ids => ids.Select(id => Item(id, id, "4270357590777233")).ToList()
+        };
+        var proxy = new MeliProxyApi(api, new MeliCatalogHydrator(api, NullLogger<MeliCatalogHydrator>.Instance), NullLogger<MeliProxyApi>.Instance);
+
+        var byFamily = await proxy.GetItemCoreAsync("4270357590777233", CancellationToken.None);
+        var byMla = await proxy.GetItemCoreAsync("MLA1", CancellationToken.None);
+
+        Assert.Equal("4270357590777233", byFamily!.Id);
+        Assert.Equal("4270357590777233", byMla!.Id);
+        Assert.Equal(2, byFamily.Variations.Count);
+        Assert.Equal(2, byMla.Variations.Count);
+    }
+
+    [Fact]
+    public async Task GetItem_VariationWithoutUserProduct_UsesNumericMlaId()
+    {
+        var api = new FakeMeliApiClient
+        {
+            OnFamily = _ => ["MLAU1"],
+            OnSearch = _ => new MeliSearchResponseDto { Results = [new MeliSearchResultDto { Id = "MLA3752456314" }] },
+            OnItems = _ =>
+            [
+                new MeliItem
+                {
+                    Id = "MLA3752456314",
+                    FamilyId = "4270357590777233",
+                    FamilyName = "Remera",
+                    UserProductId = ""
+                }
+            ]
+        };
+        var proxy = new MeliProxyApi(api, new MeliCatalogHydrator(api, NullLogger<MeliCatalogHydrator>.Instance), NullLogger<MeliProxyApi>.Instance);
+
+        var dto = await proxy.GetItemCoreAsync("4270357590777233", CancellationToken.None);
+
+        Assert.Equal("3752456314", Assert.Single(dto!.Variations).UserProductId);
     }
 
     [Fact]
@@ -123,13 +209,13 @@ public class MeliProxySearchTests : IDisposable
         return proxy.SearchCoreAsync(query, CancellationToken.None);
     }
 
-    private static MeliItem Item(string id, string? title = null) => new()
+    private static MeliItem Item(string id, string? title = null, string? familyId = null) => new()
     {
         Id = id,
         Title = title ?? "Remera roja M",
-        FamilyId = "4270357590777233",
-        FamilyName = "Remera dry fit",
-        UserProductId = "MLAU1",
+        FamilyId = familyId,
+        FamilyName = familyId == null ? null : "Remera dry fit",
+        UserProductId = id.EndsWith('2') ? "MLAU2" : "MLAU1",
         SellerSku = "ABC#ROJO#M",
         Shipping = new MeliShipping { LogisticType = id.EndsWith('2') ? "self_service" : "fulfillment" }
     };

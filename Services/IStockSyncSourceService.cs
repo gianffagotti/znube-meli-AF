@@ -17,4 +17,7 @@ public interface IStockSyncSourceService
 
     /// <summary>True if target is fulfillment and NOT hybrid (no selling_address). Skip updates in that case. Spec 03.</summary>
     Task<bool> ShouldSkipFulfillmentTargetAsync(CanonicalItem targetItem, CancellationToken cancellationToken = default);
+
+    /// <summary>True when this sibling is fulfillment without a selling_address. Other siblings of the family are not affected.</summary>
+    Task<bool> ShouldSkipFulfillmentVariantAsync(string? logisticType, string userProductId, CancellationToken cancellationToken = default);
 }

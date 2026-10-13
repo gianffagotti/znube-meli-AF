@@ -24,4 +24,7 @@ public sealed record CanonicalVariant
     /// with the authoritative Znube quantity before stock calculators run.
     /// </summary>
     public int AvailableQuantity { get; init; } = 0;
+
+    /// <summary>Sibling logistic type for a family container. Null on Legacy variations.</summary>
+    public string? LogisticType { get; init; }
 }

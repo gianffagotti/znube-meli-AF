@@ -46,7 +46,8 @@ public sealed class MeliItemNormalizer : IMeliItemNormalizer
                     // Returns null when the attribute is absent.
                     SellerSku = v.SellerSku,
 
-                    AvailableQuantity = v.AvailableQuantity
+                    AvailableQuantity = v.AvailableQuantity,
+                    LogisticType = v.LogisticType
                 })
                 .ToList();
 

@@ -158,6 +158,27 @@ public class StockSyncSourceService : IStockSyncSourceService
         return !hasSellingAddress;
     }
 
+    public Task<bool> ShouldSkipFulfillmentVariantAsync(string? logisticType, string userProductId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(logisticType))
+            return Task.FromResult(false);
+        if (!string.Equals(logisticType, "fulfillment", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(logisticType, "full", StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult(false);
+        if (string.IsNullOrWhiteSpace(userProductId))
+            return Task.FromResult(true);
+
+        return SkipWhenNoSellingAddressAsync(userProductId, cancellationToken);
+    }
+
+    private async Task<bool> SkipWhenNoSellingAddressAsync(string userProductId, CancellationToken cancellationToken)
+    {
+        var stockResponse = await _meliClient.GetUserProductStockResponseAsync(userProductId, cancellationToken);
+        var hasSellingAddress = stockResponse?.Locations?.Any(l =>
+            string.Equals(l.Type, "selling_address", StringComparison.OrdinalIgnoreCase)) == true;
+        return !hasSellingAddress;
+    }
+
     private static string? GetFirstVariantId(CanonicalItem item)
     {
         return item.Variations.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v.VariantId))?.VariantId;
