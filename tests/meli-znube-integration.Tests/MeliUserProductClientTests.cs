@@ -70,7 +70,38 @@ public class MeliUserProductClientTests
         var path = LastPath(client);
         Assert.Contains("user_product_id=MLAU1,MLAU2", path);
         Assert.DoesNotContain("%2C", path);
+        Assert.Contains("status=active", path);
+        Assert.DoesNotContain("paused", path);
+        Assert.DoesNotContain("closed", path);
         Assert.Equal(["MLA3752456314", "MLA3752456315"], page!.Results.Select(r => r.Id));
+    }
+
+    [Fact]
+    public async Task SearchItemsAsync_KeepsCommasInAMultiStatusFilter()
+    {
+        var client = Client("""{"results":[],"paging":{"limit":50,"offset":0,"total":0}}""");
+
+        await client.SearchItemsAsync(1234, new MeliItemSearchQuery
+        {
+            UserProductId = "MLAU1",
+            Status = "active,paused,closed"
+        });
+
+        var path = LastPath(client);
+        Assert.Contains("status=active,paused,closed", path);
+        Assert.DoesNotContain("%2C", path);
+    }
+
+    [Fact]
+    public async Task GetUserProductFamilyAsync_DoesNotSendItemStatus()
+    {
+        var client = Client("""{"user_products_ids":["MLAU1"],"family_id":4270357590777233}""");
+
+        await client.GetUserProductFamilyAsync("4270357590777233");
+
+        var path = LastPath(client);
+        Assert.Contains("/sites/MLA/user-products-families/4270357590777233", path);
+        Assert.DoesNotContain("status=", path);
     }
 
     [Fact]

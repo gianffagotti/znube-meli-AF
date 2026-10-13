@@ -178,7 +178,7 @@ public class MeliProxyApi
     {
         var search = await _meliClient.SearchItemsAsync(
             sellerId,
-            new MeliItemSearchQuery { UserProductId = userProductIds, Status = "active" },
+            new MeliItemSearchQuery { UserProductId = userProductIds, Status = MeliConstants.FamilySiblingItemStatuses },
             ct);
         var ids = CollectIds(search);
         if (ids.Count == 0) return [];

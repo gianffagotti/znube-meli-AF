@@ -73,7 +73,11 @@ public sealed class MeliCatalogHydrator : IMeliCatalogHydrator
 
             var search = await _meliApiClient.SearchItemsAsync(
                 sellerLong,
-                new MeliItemSearchQuery { UserProductId = id.ToUpperInvariant() },
+                new MeliItemSearchQuery
+                {
+                    UserProductId = id.ToUpperInvariant(),
+                    Status = MeliConstants.FamilySiblingItemStatuses
+                },
                 ct);
             var mlaId = search?.Results?.FirstOrDefault()?.Id;
             if (string.IsNullOrWhiteSpace(mlaId))
@@ -148,7 +152,7 @@ public sealed class MeliCatalogHydrator : IMeliCatalogHydrator
             new MeliItemSearchQuery
             {
                 UserProductId = string.Join(",", userProductIds),
-                Status = "active"
+                Status = MeliConstants.FamilySiblingItemStatuses
             },
             ct);
 

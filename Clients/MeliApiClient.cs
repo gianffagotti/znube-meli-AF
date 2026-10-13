@@ -292,7 +292,7 @@ public class MeliApiClient : IMeliApiClient
     {
         var client = GetClient();
         var status = query?.Status ?? "active";
-        var parts = new List<string> { "status=" + Uri.EscapeDataString(status) };
+        var parts = new List<string> { "status=" + FormatStatusParam(status) };
         if (!string.IsNullOrWhiteSpace(query?.Query)) parts.Add("q=" + Uri.EscapeDataString(query.Query));
         if (!string.IsNullOrWhiteSpace(query?.SellerSku)) parts.Add("seller_sku=" + Uri.EscapeDataString(query.SellerSku));
         if (!string.IsNullOrWhiteSpace(userProductIdParam))
@@ -305,6 +305,16 @@ public class MeliApiClient : IMeliApiClient
         if (!res.IsSuccessStatusCode) return null;
         var json = await res.Content.ReadAsStringAsync(cancellationToken);
         return JsonSerializer.Deserialize<MeliSearchResponseDto>(json, JsonOptions);
+    }
+
+    private static string FormatStatusParam(string status)
+    {
+        if (!status.Contains(','))
+            return Uri.EscapeDataString(status);
+
+        return string.Join(",",
+            status.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(Uri.EscapeDataString));
     }
 
     private static List<string> SplitUserProductIds(string? raw)

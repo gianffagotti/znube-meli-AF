@@ -1,3 +1,4 @@
+using meli_znube_integration.Common;
 using meli_znube_integration.Models;
 using meli_znube_integration.Models.Dtos;
 using meli_znube_integration.Services;
@@ -60,6 +61,7 @@ public class MeliCatalogHydratorTests
         Assert.Equal("Remera dry fit", result.FamilyName);
         Assert.Equal(["4270357590777233"], api.FamilyRequests);
         Assert.Equal("MLAU1,MLAU2", api.Searches.Single().UserProductId);
+        Assert.Equal(MeliConstants.FamilySiblingItemStatuses, api.Searches.Single().Status);
         Assert.Null(api.Searches.Single().CatalogProductId);
         Assert.Equal(2, result.Variations.Count);
 
@@ -208,7 +210,39 @@ public class MeliCatalogHydratorTests
 
         Assert.Equal("MLA10", result!.Id);
         Assert.Equal("MLAU999", api.Searches.Single().UserProductId);
+        Assert.Equal(MeliConstants.FamilySiblingItemStatuses, api.Searches.Single().Status);
         Assert.Empty(api.FamilyRequests);
+    }
+
+    [Fact]
+    public async Task Family_IncludesPausedSiblingWithZeroQuantity()
+    {
+        var api = new FakeMeliApiClient
+        {
+            OnFamily = _ => ["MLAU1", "MLAU2"],
+            OnSearch = _ => new MeliSearchResponseDto
+            {
+                Results =
+                [
+                    new MeliSearchResultDto { Id = "MLA100" },
+                    new MeliSearchResultDto { Id = "MLA200" }
+                ]
+            },
+            OnItems = _ =>
+            [
+                Sibling("MLA100", "MLAU1", "Rojo", "M", sellerSku: "SKU-A", quantity: 4),
+                Sibling("MLA200", "MLAU2", "Azul", "L", sellerSku: "SKU-B", quantity: 0)
+            ]
+        };
+        var item = new MeliItem { Id = "MLA100", FamilyId = "4270357590777233", UserProductId = "MLAU1" };
+
+        var result = await NewHydrator(api).HydrateAsync(item, "1234");
+
+        Assert.Equal(MeliConstants.FamilySiblingItemStatuses, api.Searches.Single().Status);
+        Assert.Equal(2, result.Variations.Count);
+        var paused = result.Variations.Single(v => v.UserProductId == "MLAU2");
+        Assert.Equal(0, paused.AvailableQuantity);
+        Assert.Equal(4, result.Variations.Single(v => v.UserProductId == "MLAU1").AvailableQuantity);
     }
 
     [Fact]

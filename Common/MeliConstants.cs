@@ -16,4 +16,10 @@ public static class MeliConstants
 
     /// <summary>Opción por defecto al enviar mensaje al comprador (option_id).</summary>
     public const string MessageOptionIdOther = "OTHER";
+
+    /// <summary>
+    /// Status list for User Products family sibling search.
+    /// Commas stay literal on <c>/users/{seller_id}/items/search</c>.
+    /// </summary>
+    public const string FamilySiblingItemStatuses = "active,paused,closed";
 }
