@@ -69,7 +69,7 @@ public class StockLocationProcessor
 
         try
         {
-            var search = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = userProductId }, ct);
+            var search = await _meliClient.SearchItemsAsync(long.Parse(sellerId), new MeliItemSearchQuery { UserProductId = userProductId, Status = "active,paused" }, ct);
             sourceItemId = search?.Results?.FirstOrDefault()?.Id;
             if (!string.IsNullOrWhiteSpace(sourceItemId))
             {
